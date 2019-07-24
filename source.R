@@ -16,17 +16,23 @@ is_csv <- function(file) {
 }
 
 parse_file <- function(filename) {
-  if (is_csv(filename)) {
-    return(read_csv(filename, cols(.default = "c")))
+  
+  if(is_dir(filename)) {
+    warning(str_c("Can't parse a directory: ", filename))
+    return(NULL)
   }
   
-  read_delim(filename, "|")
+  if (is_csv(filename)) {
+    return(read_csv(filename, col_types = cols(.default = "c")))
+  }
+  
+  read_delim(filename, "|", col_types = cols(.default = "c"))
 }
 
 make_dfs <- function(path) {
   filenames <- dir_ls(path)
   dfs <- map(filenames, parse_file)
-  base_filenames <- str_replace(filenames, ".*/(.+)\\.txt", "\\1")
+  base_filenames <- str_replace(filenames, ".*/(.+)\\.[:alpha:]{3}", "\\1")
   names(dfs) <- base_filenames
   dfs
 }
@@ -42,6 +48,12 @@ convert_to_datetime <- function(days_since_enrollment, device_time) {
 }
 
 ################################## WRITING CSVS ################################
+
+write_main_csvs <- function(cleaned_dfs, cleaned_data_path) {
+  map2(cleaned_dfs,
+       names(cleaned_dfs),
+       ~ write_csv(.x, str_c(cleaned_data_path, "/", .y, ".csv")))
+}
 
 write_cgm_csv_for_patient <- function(df, dataset_name) {
   patient_id <- df$patient_id[1]

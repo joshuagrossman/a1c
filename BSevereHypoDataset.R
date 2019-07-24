@@ -1,17 +1,38 @@
+################################## LIBRARIES ###################################
+
 source("lib/source.R")
 
-dfs <- make_dfs("data/BSevereHypoDataset/Data Tables")
+################################## GLOBALS #####################################
+
+data_path <- "data/BSevereHypoDataset/Data Tables"
+cleaned_data_path <- "data/BSevereHypoDataset/clean"
+data_name <- "BSevereHypoDataset"
+
+################################# READ IN DATA #################################
+
+dfs <- make_dfs(data_path)
 
 #View(dfs)
 
 cleaned_dfs <- list()
 
-cleaned_dfs$BDataCGM <- 
+################################# CGM DATA #####################################
+
+cleaned_dfs$cgm <- 
   dfs$BDataCGM %>% 
   filter(!is.na(Glucose)) %>% 
-  # group_by(PtID) %>% 
-  # mutate(Day = DeviceDaysFromEnroll - min(DeviceDaysFromEnroll)) %>% 
-  select(RecID, PtID, DeviceDaysFromEnroll, DeviceTm, Glucose)
+  mutate(datetime = convert_to_datetime(DeviceDaysFromEnroll, DeviceTm)) %>% 
+  select(RecID, PtID, datetime, Glucose)
+
+################################# HBA1C DATA ###################################
+
+cleaned_dfs$a1c <- 
+  dfs$BSampleResults %>% 
+  filter(ResultName == "HbA1c") %>% 
+  mutate(days_since_enrollment = convert_to_date(0)) %>% 
+  select(PtID, a1c = Value, days_since_enrollment)
+
+################################ STATIC MEASUREMENTS ###########################
 
 BDemoLifeDiabHxMgmt_cleaned <-
   dfs$BDemoLifeDiabHxMgmt %>% 
@@ -29,13 +50,9 @@ cleaned_dfs$measurements <-
   full_join(BDemoLifeDiabHxMgmt_cleaned, BMedChart_cleaned, by = "PtID") %>% 
   full_join(BPtRoster_cleaned, by = "PtID")
 
-cleaned_dfs$a1c <- 
-  dfs$BSampleResults %>% 
-  filter(ResultName == "HbA1c") %>% 
-  mutate(days_since_enrollment = 0) %>% 
-  select(PtID, a1c = Value, days_since_enrollment)
+################################ WRITE CSVS TO FILE ############################
 
-map2(cleaned_dfs,
-     names(cleaned_dfs),
-     ~ write_csv(.x, str_c("data/BSevereHypoDataset/clean/", .y, ".csv")))
+write_main_csvs(cleaned_dfs, cleaned_data_path)
+
+split_into_csvs(str_c(cleaned_data_path, "/cgm.csv"), data_name)
      

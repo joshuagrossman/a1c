@@ -2,9 +2,15 @@
 
 source("lib/source.R")
 
+################################## GLOBALS #####################################
+
+data_path <- "data/CMetforminDataset/Data Tables"
+cleaned_data_path <- "data/CMetforminDataset/clean"
+data_name <- "CMetforminDataset"
+
 ################################# READ IN DATA #################################
 
-dfs <- make_dfs("data/CMetforminDataset/Data Tables")
+dfs <- make_dfs(data_path)
 
 #View(dfs)
 
@@ -18,7 +24,7 @@ cleaned_dfs$cgm <-
   mutate(datetime = convert_to_datetime(DeviceDaysFromEnroll, DeviceTm)) %>% 
   select(PtID, datetime, Glucose)
 
-################################# HbA1c DATA ###################################
+################################# HBA1C DATA ###################################
 
 cleaned_dfs$a1c <- 
   dfs$CLabHbA1c %>% 
@@ -67,9 +73,7 @@ if (!only_unique_patients) {
 
 ################################ WRITE CSVS TO FILE ############################
 
-map2(cleaned_dfs,
-     names(cleaned_dfs),
-     ~ write_csv(.x, str_c("data/CMetforminDataset/clean/", .y, ".csv")))
+write_main_csvs(cleaned_dfs, cleaned_data_path)
 
-split_into_csvs("data/CMetforminDataset/clean/cgm.csv", "CMetforminDataset")
+split_into_csvs(str_c(cleaned_data_path, "/cgm.csv"), data_name)
 
