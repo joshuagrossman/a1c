@@ -39,12 +39,20 @@ make_dfs <- function(path) {
 
 ################################## MUTATING CSVS ###############################
 
-convert_to_date <- function(days_since_enrollment) {
-  mdy("1/1/2019") + days(days_since_enrollment)
+convert_to_date <- function(days_since_enrollment, study_start_date) {
+  mdy(study_start_date) + days(days_since_enrollment)
 }
 
-convert_to_datetime <- function(days_since_enrollment, device_time) {
-  mdy_hms(str_c("1/1/2019 ", device_time)) + days(days_since_enrollment)
+convert_to_datetime <- function(days_since_enrollment, device_time, study_start_date) {
+  mdy_hms(str_c(study_start_date, " ", device_time)) + days(days_since_enrollment)
+}
+
+inches_to_cm <- function(inches) {
+  2.54 * as.double(inches)
+}
+
+lbs_to_kg <- function(lbs) {
+  0.4536 * as.double(lbs)
 }
 
 ################################## WRITING CSVS ################################
@@ -55,21 +63,21 @@ write_main_csvs <- function(cleaned_dfs, cleaned_data_path) {
        ~ write_csv(.x, str_c(cleaned_data_path, "/", .y, ".csv")))
 }
 
-write_cgm_csv_for_patient <- function(df, dataset_name) {
-  patient_id <- df$patient_id[1]
-  write_csv(df, str_c("data/", 
-                      dataset_name, 
-                      "/clean/cgm_by_patient/", 
+write_cgm_csv_for_patient <- function(df, cleaned_data_path) {
+  patient_id <- df$id[1]
+  df_no_id <- select(df, -id)
+  write_csv(df_no_id, str_c(cleaned_data_path,
+                      "/cgm_by_patient/",
                       patient_id, 
                       ".csv"))
 }
 
-split_into_csvs <- function(cgm_data_path, dataset_name) {
+split_cgm_into_patients <- function(cleaned_data_path) {
   cgm <- 
-    read_csv(cgm_data_path) %>% 
-    mutate(dataset = dataset_name,
-           patient_id = PtID) %>% 
-    group_by(PtID)
+    read_csv(str_c(cleaned_data_path, "/cgm.csv")) %>% 
+    group_by(id)
   
-  group_walk(cgm, ~ write_cgm_csv_for_patient(., dataset_name))
+  group_walk(cgm, 
+             ~ write_cgm_csv_for_patient(., cleaned_data_path), 
+             keep = T)
 }

@@ -4,13 +4,14 @@ source("lib/source.R")
 
 ################################## GLOBALS #####################################
 
-data_path <- "data/CMetforminDataset/Data Tables"
-cleaned_data_path <- "data/CMetforminDataset/clean"
-data_name <- "CMetforminDataset"
+DATA_PATH <- "data/CMetforminDataset/Data Tables"
+CLEANED_DATA_PATH <- "data/CMetforminDataset/clean"
+DATA_NAME <- "CMetforminDataset"
+STUDY_START_DATE <- "07-02-2014"
 
 ################################# READ IN DATA #################################
 
-dfs <- make_dfs(data_path)
+dfs <- make_dfs(DATA_PATH)
 
 #View(dfs)
 
@@ -21,28 +22,37 @@ cleaned_dfs <- list()
 cleaned_dfs$cgm <- 
   dfs$CDataCGM %>% 
   filter(!is.na(Glucose)) %>% 
-  mutate(datetime = convert_to_datetime(DeviceDaysFromEnroll, DeviceTm)) %>% 
-  select(PtID, datetime, Glucose)
+  mutate(datetime = convert_to_datetime(DeviceDaysFromEnroll, 
+                                        DeviceTm, 
+                                        STUDY_START_DATE)) %>% 
+  select(id = PtID, 
+         datetime, 
+         glucose = Glucose)
 
 ################################# HBA1C DATA ###################################
 
 cleaned_dfs$a1c <- 
   dfs$CLabHbA1c %>% 
-  mutate(date = convert_to_date(TestDaysFromEnroll)) %>% 
-  select(PtID, date, HbA1c)
+  mutate(date = convert_to_date(TestDaysFromEnroll,
+                                STUDY_START_DATE)) %>% 
+  select(id = PtID, 
+         date, 
+         a1c = HbA1c)
 
 # Impossible to determine when these a1c measurements occurred, seems like they
 # are before the study start date
 # SampleResults_cleaned <- 
 #   dfs$SampleResults %>% 
 #   filter(ResultName == "HbA1c") %>% 
-#   select(PtID, a1c = Value)
+#   select(id, a1c = Value)
 
 ################################ STATIC MEASUREMENTS ###########################
-  
+
 CRandomization_cleaned <-
   dfs$CRandomization %>% 
-  select(PtID, Weight, Height)
+  select(id = PtID, 
+         weight = Weight, 
+         height = Height)
 
 CScreening_cleaned <-
   dfs$CScreening %>% 
@@ -51,21 +61,40 @@ CScreening_cleaned <-
                                  "\\2-01-\\1") %>% 
                      mdy(),
          estimated_dob = diag_date - years(DiagT1DAge),
-         # study occurred end of 2013 / beginning of 2014
-         estimated_age = interval(estimated_dob, 
-                                  mdy("1/1/2014")) / years(1)) %>% 
-  select(PtID, Gender, Ethnicity, Race, estimated_age)
+         age = interval(estimated_dob, 
+                                  mdy(STUDY_START_DATE)) / years(1),
+         years_since_diag = age - as.double(DiagT1DAge)) %>% 
+  select(id = PtID, 
+         gender = Gender, 
+         ethnicity = Ethnicity, 
+         race = Race, 
+         age,
+         years_since_diag)
 
 CTrtGroupUnmasked_cleaned <-
   dfs$CTrtGroupUnmasked %>% 
-  select(PtID, TrtGroup)
+  select(id = PtID, 
+         metformin = TrtGroup)
+
+cgm_name <-
+  dfs$CDataCGM %>% 
+  group_by(PtID) %>% 
+  select(id = PtID, 
+         cgm_name = CCGMDeviceType) %>% 
+  summarize(cgm_name = unique(cgm_name))
 
 cleaned_dfs$measurements <- 
-  left_join(CRandomization_cleaned, CScreening_cleaned, by = "PtID") %>% 
-  full_join(CTrtGroupUnmasked_cleaned, by = "PtID") %>% 
-  mutate(datafile = str_c(.$PtID, ".csv"))
+  full_join(CRandomization_cleaned, CScreening_cleaned, by = "id") %>% 
+  full_join(CTrtGroupUnmasked_cleaned, by = "id") %>% 
+  full_join(cgm_name, by = "id") %>% 
+  mutate(datafile = str_c(.$id, ".csv"),
+         study_start_date = STUDY_START_DATE,
+         dataset = DATA_NAME)
 
-only_unique_patients <- nrow(cleaned_dfs$measurements) == length(unique(cleaned_dfs$measurements$PtID))
+################################ DATA CHECKS ###################################
+
+only_unique_patients <- nrow(cleaned_dfs$measurements) == 
+  length(unique(cleaned_dfs$measurements$id))
   
 if (!only_unique_patients) {
   warning("Non-unique patient data.")
@@ -73,7 +102,7 @@ if (!only_unique_patients) {
 
 ################################ WRITE CSVS TO FILE ############################
 
-write_main_csvs(cleaned_dfs, cleaned_data_path)
+write_main_csvs(cleaned_dfs, CLEANED_DATA_PATH)
 
-split_into_csvs(str_c(cleaned_data_path, "/cgm.csv"), data_name)
+split_cgm_into_patients(CLEANED_DATA_PATH)
 
