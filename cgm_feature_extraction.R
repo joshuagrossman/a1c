@@ -27,23 +27,20 @@
 library(tidyverse)
 library(fs)
 library(rlang)
+library(lubridate)
 
 ################################## GLOBALS #####################################
 
-MAX_RECORDS_PER_DAY_5_MINUTE <- 288
-  
-MAX_RECORDS_PER_DAY_15_MINUTE <- 96
+MINUTES_BETWEEN_RECORDS <- c(5, 15)
+
+DAY_START <- 6
 
 LOW_BG_LIMIT <- 70
-
 VERY_LOW_BG_LIMIT <- 54
-
 HIGH_BG_LIMIT <- 180
-
 VERY_HIGH_BG_LIMIT <- 250
 
 MIN_BG_CUTOFF <- 40
-
 MAX_BG_CUTOFF <- 400
 
 MIN_DATA_REQUIRED <- 0.7
@@ -76,5 +73,109 @@ load_dir <- function(dirpath) {
   }
   
   dir_map(dirpath, load_file)
+}
+
+
+################################## FILTER INSUFFICIENT DATA ####################
+
+calculate_minutes_per_record <- function(df) {
+  df$datetime %>% 
+    head(1000) %>% 
+    diff() %>% 
+    time_length(unit = "minutes") %>% 
+    median(na.rm = T)
+}
+  
+make_intervals <- function(df) {
+  df %>% 
+    mutate(cgm_day = lubridate::date(datetime),
+           cgm_hour = lubridate::hour(datetime),
+           nighttime = cgm_hour < DAY_START)
+}
+
+count_records_per_interval <- function(df) {
+  
+  if (! calculate_minutes_per_record(df) %in% MINUTES_BETWEEN_RECORDS) {
+    abort("CGM data not recorded in 5 or 15 minute intervals.")
+  }
+  
+  cgm_record_multiplier <- 1
+  
+  if (median_time_between_records == 5) {
+    cgm_record_multiplier <- 3
+  }
+  
+  cgm_records_per_hour <- 4 * cgm_record_multiplier
+    
+  daytime_record_multiplier <- ((24 - DAY_START) / DAY_START) - 1
+  
+  interval_df <- make_intervals(df)
+    
+  exclude_df <- 
+    interval_df %>% 
+    group_by(cgm_day, nighttime) %>%
+    summarize(n = n()) %>% 
+    ungroup() %>% 
+    mutate(prop = n / (cgm_records_per_hour * 
+                            (DAY_START * 
+                               (1 + (! nighttime) * 
+                               daytime_record_multiplier)))) %>% 
+    filter(prop < MIN_DATA_REQUIRED) %>% 
+    select(cgm_day, nighttime)
+  
+  anti_join(interval_df, exclude_df, by = c("cgm_day", "nighttime"))
+}
+
+################################## BOOLEANS FOR BG STATS #######################
+
+make_bg_booleans <- function(df) {
+  
+  bg_df <-
+    df %>% 
+    mutate(very_low <- glucose < VERY_LOW_BG_LIMIT,
+           low <- glucose < LOW_BG_LIMIT,
+           in_target_range <- between(glucose, LOW_BG_LIMIT, HIGH_BG_LIMIT),
+           high <- glucose > HIGH_BG_LIMIT,
+           very_high <- glucose > VERY_HIGH_BG_LIMIT)
+  
+  list(data = bg_df, features = NULL)
+}
+
+################################## CALCULATE BG STATS #####################################
+
+calculate_mean_bg <- function(d) {
+  
+  df <- d$data
+  features <- d$features
+  
+  features <- c(features, 
+                mean_bg = mean(df$glucose, na.rm = T))
+  
+  list(data = df, features = features)
+}
+
+calculate_percent_in_range <- function(df, range_name) {
+  
+  in_range <- `$`(df, range_name)
+  full_day_percent_in_range <- mean(in_range, na.rm = T)
+  
+  nighttime <- df$nighttime
+  in_range_nighttime <- in_range[nighttime]
+  in_range_daytime <- in_range[! nighttime]
+    
+  nighttime_percent_in_range <- mean(in_range_nighttime, na.rm = T)
+  daytime_percent_in_range <- mean(in_range_daytime, na.rm = T)
+  
+  percent_in_range_features <- 
+    c(full_day_percent_in_range,
+      nighttime_percent_in_range,
+      daytime_percent_in_range)
+  
+  names(percent_in_range_features) <- 
+    c(str_c("percent_", range_name, "_full_day"),
+      str_c("percent_", range_name, "_nighttime"),
+      str_c("percent_", range_name, "_daytime"))
+  
+  percent_in_range_features
 }
 
