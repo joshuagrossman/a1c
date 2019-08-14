@@ -21,6 +21,27 @@ combine_a1c_and_cgm_data <- function(cgm_data, a1c_data) {
                         .f = ~ c(.y, list(a1c = a1c_data[[.x]]$data)))
 }
 
+combine_measurements_and_cgm_data <- function(cgm_data, measurements) {
+  # Input: Two lists of sub-lists, with each sublist containing the patient id
+  # and associated cgm or a1c data.
+  #
+  # Output: One list of sub-lists, each containing id, a1c, cgm data for a single patient.
+  
+  cgm_ids <- map_chr(cgm_data, ~ as.character(.$id))
+  measurements_ids <- map_chr(measurements, ~ as.character(.$id))
+  
+  matching_id_indices <- match(cgm_ids, measurements_ids)
+  
+  filtered_cgm_data <- cgm_data
+  filtered_cgm_data[is.na(matching_id_indices)] <- NULL
+  
+  matching_id_indices <- matching_id_indices[! is.na(matching_id_indices)]
+  
+  combined_data <- map2(.x = matching_id_indices, 
+                        .y = filtered_cgm_data,
+                        .f = ~ c(.y, list(measurements = measurements[[.x]]$data)))
+}
+
 identify_most_recent_a1c_with_cgm_data <- function(individual_patient_data) {
   
   bg_df <- individual_patient_data$data

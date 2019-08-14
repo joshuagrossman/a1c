@@ -29,10 +29,40 @@ load_file <- function(filepath, required_headers) {
   
   df <- read_csv(filepath)
   
-  if (! all(colnames(df) %in% required_headers)) {
-    abort(str_c("Datafile at `filepath` must contain ", required_headers))
+  if (! is.null(required_headers)) {
+    if (! all(colnames(df) %in% required_headers)) {
+      abort(str_c("Datafile at `filepath` must contain ", required_headers))
+    }
   }
   
   group_by(df, id) %>% 
-    group_map(~ list(id = .y, data = .x))
+    group_map(~ list(id = pull(.y, "id"), data = .x))
 }
+
+
+
+# load_individual_file <- function(filepath) {
+#   
+#   if (path_ext(filepath) != "csv") {
+#     abort("CGM datafile must be a CSV.")
+#   }
+#   
+#   bg_df <- read_csv(filepath)
+#   
+#   if (! all(colnames(bg_df) %in% CGM_HEADERS)) {
+#     abort(str_c("CGM datafile must contain ", CGM_HEADERS))
+#   }
+#   
+#   id <- path_ext_remove(path_file(filepath))
+#   
+#   list(id = id, data = bg_df)
+# }
+# 
+# load_dir <- function(dirpath) {
+#   
+#   if (! is_dir(dirpath)) {
+#     abort("CGM data folder must be a directory.")
+#   }
+#   
+#   dir_map(dirpath, load_individual_file)
+# }
