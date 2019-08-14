@@ -1,60 +1,3 @@
-# Constants
-# DONE Max number of records for each day
-# DONE Low BG limit
-# DONE High BG limit
-# DONE ranges, sleep 12 AM - 6 AM, wake 6 AM - 12 AM, 24 hours
-# DONE 70-80% data required (make sure satisfied if 15 min recordings)
-
-
-# Minimum BG cutoff (check data?)
-# Maximum BG cutoff (check data?)
-
-
-# Features
-# DONE Count of valid records at each day interval
-# DONE Fraction of max records valid at each day interval
-# DONE Average BG at each day interval
-# DONE TIR in each day interval 70-180, 70-140
-# DONE SD at each interval
-# DONE Time very high >250
-# DONE Time high >180 <250
-# DONE Time low >54 <70
-# DONE Time very low <54
-
-# Mean BG when low / high
-# SD BG when low / high
-
-# Number of hypo / hyperglycemic events per day
-# CV at each interval
-
-# DONE How to filter missing data? By day interval? Or by day? -- Full Day in the past
-
-# DONE How to average/sd results? Over all measurements (unweighted) or by day? -- Average by day
-
-# Brainstorming additional features worth extracting
-
-# Rate of change - only include times of 1-2 hours of increase
-
-# Rate of change of BG across hours, versus half hours, versus 15 minutes... as 
-# a way to define the complexity of the curve
-
-# What is the 90th percentile of the highs for a particular interval
-
-# Percentile statistics as opposed to average (don't use max/min)
-
-# Google definition of fractal dimensions for curves
-
-# Keeping a list of how to analyze CGM data different ways - averaging over days versys averaging over all points
-
-# Sensitivity analysis - calculate all of these metrics for a particular person
-# removing 1, 2, 3, ... data points at random, quantify bias of missing data
-
-# Random forest, LASSO, GBM, and XGBoost, compare against eA1c
-
-# 10-fold CV to tune parameters with grid search, good metric to report is R^2, 
-# scatterplot for both models of actual versus predicted, color the points by the
-# value of the demographic of interest
-
 source("lib/load.R")
 
 ################################## GLOBALS #####################################
@@ -77,6 +20,9 @@ RANGE_NAMES <- c("very_low",
                  "high", 
                  "very_high")
 
+# most relevant sources of variation in BG data
+CORE_RANGE_NAMES <- c("in_target_range", "high")
+
 MIN_DATA_REQUIRED <- 0.7
 
 # data points required to calculate summary stats
@@ -87,13 +33,19 @@ MIN_RECORDINGS_REQUIRED <- 10
 make_cgm_feature_df <- function(cgm_data_with_id, 
                                 id_name = "id", 
                                 data_name = "data") {
-  # Input: List containing CGM data for a particular patient and the patient's id, as generate by load_file()
+  # Input: List containing CGM data for a particular patient and the 
+  # patient's id, as generate by load_file()
   #
   # Output: One-row dataframe containing summary features for the patient's CGM data.
   
   id <- as.character(cgm_data_with_id[[id_name]])
-  cgm_data <- cgm_data_with_id[[data_name]] %>% 
-    arrange(datetime)
+  cgm_data <- cgm_data_with_id[[data_name]]
+  
+  if (is.na(cgm_data)) {
+    return(NULL)
+  }
+  
+  cgm_data <- arrange(cgm_data, datetime)
   
   if (nrow(cgm_data) < MIN_RECORDINGS_REQUIRED) {
     warning(str_c("Less than ", MIN_RECORDINGS_REQUIRED, 
@@ -105,6 +57,7 @@ make_cgm_feature_df <- function(cgm_data_with_id,
   
   calculate_all_bg_stats(sufficient_cgm_data)
 }
+
 
 ############# FILTER TOO OLD, TOO RECENT, AND INSUFFICIENT DATA ################
 
@@ -193,7 +146,27 @@ filter_insufficient_data <- function(bg_df, cgm_day_name = "cgm_day") {
   anti_join(interval_df, exclude_df, by = c(cgm_day_name))
 }
 
-################################## SIMPLE BG STATS #############################
+################################## SUMMARY BG STATS ############################
+
+na_mean <- function(v) {
+  mean(v, na.rm = T)
+}
+
+na_sd <- function(v) {
+  sd(v, na.rm = T)
+}
+
+na_cv <- function(v) {
+  na_sd(v) / na_mean(v)
+}
+
+check_if_sufficient_length <- function(v) {
+  
+  if (length(v) < MIN_RECORDINGS_REQUIRED) {
+    return(NA)
+  }
+  v
+}
 
 calculate_cgm_days <- function(bg_df, cgm_day_name = "cgm_day") {
   # Calculates the total number of days for which CGM data is available
@@ -216,7 +189,9 @@ calculate_simple_bg_stat <- function(bg_df, f, stat_name) {
   bg_nighttime <- bg[nighttime]
   bg_daytime <- bg[! nighttime]
   
-  bg_stat <- c(f(bg), f(bg_nighttime), f(bg_daytime))
+  bg_stat <- c(f(bg %>% check_if_sufficient_length), 
+               f(bg_nighttime %>% check_if_sufficient_length), 
+               f(bg_daytime %>% check_if_sufficient_length))
   
   names(bg_stat) <- c(str_c(stat_name, "_bg_full_day"),
                       str_c(stat_name, "_bg_nighttime"),
@@ -247,14 +222,6 @@ make_bg_booleans <- function(bg_df) {
            very_high = glucose > VERY_HIGH_BG_LIMIT)
 }
 
-na_mean <- function(v) {
-  mean(v, na.rm = T)
-}
-
-na_sd <- function(v) {
-  sd(v, na.rm = T)
-}
-
 calculate_percent_in_given_range <- function(bg_df, range_name) {
   # Calculates the percent of valid CGM readings that fall in the supplied
   # range_name (e.g. "very_high") for each day interval
@@ -282,12 +249,14 @@ calculate_percent_in_given_range <- function(bg_df, range_name) {
       daytime_percent_in_range)
   
   names(percent_in_range_features) <- 
-    c(str_c(range_name, "_full_day"),
-      str_c(range_name, "_nighttime"),
-      str_c(range_name, "_daytime"))
+    c(str_c("percent_", range_name, "_full_day"),
+      str_c("percent_", range_name, "_nighttime"),
+      str_c("percent_", range_name, "_daytime"))
   
   percent_in_range_features
 }
+
+################################## STATS FOR GIVEN RANGES ######################
 
 calculate_stat_in_given_range <- function(bg_df, range_name, f, stat_name) {
   # Applies f to valid BG readings that fall in the supplied
@@ -309,16 +278,13 @@ calculate_stat_in_given_range <- function(bg_df, range_name, f, stat_name) {
   nighttime <- pull(bg_df, "nighttime")
   bg <- pull(bg_df, "glucose")
   
-  in_range_nighttime <- in_range[nighttime]
-  in_range_daytime <- in_range[! nighttime]
-  
   bg_in_range_full_day <- bg[in_range] 
-  bg_in_range_nighttime <- bg[in_range_nighttime]
-  bg_in_range_daytime <- bg[in_range_daytime]
+  bg_in_range_nighttime <- bg[in_range & nighttime]
+  bg_in_range_daytime <- bg[in_range & (! nighttime)]
   
-  full_day_stat <- f(bg_in_range_full_day)
-  nighttime_stat <- f(bg_in_range_nighttime)
-  daytime_stat <- f(bg_in_range_daytime)
+  full_day_stat <- f(bg_in_range_full_day %>% check_if_sufficient_length)
+  nighttime_stat <- f(bg_in_range_nighttime %>% check_if_sufficient_length)
+  daytime_stat <- f(bg_in_range_daytime %>% check_if_sufficient_length)
   
   stat_in_range_features <- 
     c(full_day_stat,
@@ -326,37 +292,50 @@ calculate_stat_in_given_range <- function(bg_df, range_name, f, stat_name) {
       daytime_stat)
   
   names(stat_in_range_features) <- 
-    c(str_c(range_name, "_", stat_name, "_full_day"),
-      str_c(range_name, "_", stat_name, "_nighttime"),
-      str_c(range_name, "_", stat_name, "_daytime"))
+    c(str_c(range_name, "_", stat_name, "_bg_full_day"),
+      str_c(range_name, "_", stat_name, "_bg_nighttime"),
+      str_c(range_name, "_", stat_name, "_bg_daytime"))
   
   stat_in_range_features
 }
 
+################################## STATS PIPELINE ##############################
+
 calculate_all_bg_stats <- function(bg_df) {
+  # Applies all bg stats functions to bg_df
   
   bg_df <- make_bg_booleans(bg_df)
   
   features <- c(calculate_cgm_days(bg_df),
                 calculate_simple_bg_stat(bg_df, na_mean, "mean"),
-                calculate_simple_bg_stat(bg_df, na_sd, "sd"))
+                calculate_simple_bg_stat(bg_df, na_sd, "sd"),
+                calculate_simple_bg_stat(bg_df, na_cv, "cv"))
   
-  percent_in_range <- map(RANGE_NAMES, 
+  percent_in_range <- map(CORE_RANGE_NAMES, 
                         ~ calculate_percent_in_given_range(bg_df, .))
   
-  mean_in_range <- map(RANGE_NAMES, 
+  mean_in_range <- map(CORE_RANGE_NAMES, 
                           ~ calculate_stat_in_given_range(bg_df, 
                                                              ., 
                                                              na_mean, 
                                                              "mean"))
   
-  sd_in_range <- map(RANGE_NAMES, 
+  sd_in_range <- map(CORE_RANGE_NAMES, 
                        ~ calculate_stat_in_given_range(bg_df, 
                                                           ., 
                                                           na_sd, 
                                                           "sd"))
   
-   c(features, unlist(c(percent_in_range, mean_in_range, sd_in_range)))
+  cv_in_range <- map(CORE_RANGE_NAMES, 
+                     ~ calculate_stat_in_given_range(bg_df, 
+                                                     ., 
+                                                     na_cv, 
+                                                     "cv"))
+  
+   c(features, unlist(c(percent_in_range, 
+                        mean_in_range, 
+                        sd_in_range,
+                        cv_in_range)))
 }
 
 
