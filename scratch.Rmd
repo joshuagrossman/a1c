@@ -1,0 +1,165 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+# Constants
+# DONE Max number of records for each day
+# DONE Low BG limit
+# DONE High BG limit
+# DONE ranges, sleep 12 AM - 6 AM, wake 6 AM - 12 AM, 24 hours
+# DONE 70-80% data required (make sure satisfied if 15 min recordings)
+
+# Minimum BG cutoff (check data?)
+# Maximum BG cutoff (check data?)
+
+# Features
+# DONE Count of valid records at each day interval
+# DONE Fraction of max records valid at each day interval
+# DONE Average BG at each day interval
+# DONE TIR in each day interval 70-180, 70-140
+# DONE SD at each interval
+# DONE Time very high >250
+# DONE Time high >180 <250
+# DONE Time low >54 <70
+# DONE Time very low <54
+# DONE Mean BG when low / high
+# DONE SD BG when low / high
+
+# Number of hypo / hyperglycemic events per day
+# CV at each interval
+
+# DONE How to filter missing data? By day interval? Or by day? -- Full Day in the past
+
+# DONE How to average/sd results? Over all measurements (unweighted) or by day? -- Average by day
+
+# Brainstorming additional features worth extracting
+
+# Rate of change - only include times of 1-2 hours of increase
+
+# Rate of change of BG across hours, versus half hours, versus 15 minutes... as 
+# a way to define the complexity of the curve
+
+# What is the 90th percentile of the highs for a particular interval?
+
+# Percentile statistics as opposed to average (don't use max/min)
+
+# Google definition of fractal dimensions for curves
+
+# Keeping a list of how to analyze CGM data different ways - averaging over days versys averaging over all points
+
+# Sensitivity analysis - calculate all of these metrics for a particular person
+# removing 1, 2, 3, ... data points at random, quantify bias of missing data
+
+# Random forest, LASSO, GBM, and XGBoost, compare against eA1c
+
+# All two-way interactions
+
+# 10-fold CV to tune parameters with grid search, good metric to report is R^2, 
+# scatterplot for both models of actual versus predicted, color the points by the
+# value of the demographic of interest
+```
+
+```{r}
+library(glmnet)
+
+datasets <- c(
+  "RT_CGM_Randomized_Clinical_Trial",
+  "CMetforminDataset",
+  "Protocol_F",
+  "Protocol_H"
+)
+
+create_feature_df <- function(dataset_name) {
+  
+  cgm <- load_file(str_c("~/a1c/data_gathering/data/", dataset_name, "/clean/cgm.csv"), CGM_HEADERS)
+  
+  a1c <- load_file(str_c("~/a1c/data_gathering/data/", dataset_name, "/clean/a1c.csv"), A1C_HEADERS)
+  
+  measurements <- load_file(str_c("~/a1c/data_gathering/data/", dataset_name, "/clean/measurements.csv"), NULL)
+  
+  combined <- combine_cgm_data_with_other_data(cgm, a1c, "a1c") %>% 
+                combine_cgm_data_with_other_data(measurements, "measurements")
+  
+  filtered <- filter_all_cgm_by_a1c(combined)
+  
+  filtered_with_features <- map(filtered, ~ append(.x, list(cgm_features = make_cgm_feature_df(.x, data_name = "filtered_cgm_data"))))
+  
+  feature_df_as_list <- map(filtered_with_features, 
+                            ~ c(id = .[["id"]],
+                                .[["cgm_features"]], 
+                                .[["measurements"]],
+                                most_recent_a1c_value = .[["most_recent_a1c_value"]]))
+  
+  reduce(feature_df_as_list, bind_rows)
+}
+
+feature_df_as_list <- future_map(datasets, create_feature_df)
+
+feature_df <- reduce(feature_df_as_list, bind_rows)
+```
+
+Remove columns where more than 5% of numeric entries are NA?
+
+```{r}
+feature_df <- filter(feature_df, ! is.na(cgm_days) & cgm_days > 6)
+
+feature_df <- mutate(feature_df, ea1c = 3.31 + mean_bg_full_day * 0.02392)
+```
+
+```{r}
+feature_df <- feature_df %>% 
+  select(-id, -cgm_days, -datafile, -study_start_date, -dataset, -cgm_name) %>% 
+  na.omit()
+```
+
+```{r}
+mm <- model.matrix(most_recent_a1c_value ~ ., data = feature_df)
+x <- mm[,-1]
+
+mm2way <- model.matrix(most_recent_a1c_value ~ ., data = feature_df)
+x2way <- mm2way[,-1]
+
+y <- feature_df$most_recent_a1c_value
+```
+
+```{r}
+train <- sample(1:nrow(mm), nrow(mm) * 0.8)
+
+lm_fit <- lm(most_recent_a1c_value ~ mean_bg_full_day, feature_df[train, ])
+
+lm_pred <- predict(lm_fit, feature_df)
+```
+
+```{r}
+lambdas <- 10 ^ seq(10, -2, length = 100)
+
+cv_out <- cv.glmnet(x[train,], y[train], alpha = 1)
+lambda <- cv_out$lambda.min
+
+lasso_fit <- glmnet(x, y, alpha = 1, lambda = lambda)
+
+lasso_pred <- predict(lasso_fit, x)
+```
+
+```{r}
+cv_out <- cv.glmnet(x2way[train,], y[train], alpha = 1)
+lambda <- cv_out$lambda.min
+
+lasso_fit_2way <- glmnet(x2way, y, alpha = 1, lambda = lambda)
+
+lasso_pred_2way <- predict(lasso_fit_2way, x2way)
+```
+
+```{r}
+feature_df %>% 
+  mutate(lm_pred = lm_pred,
+         lasso_pred = lasso_pred,
+         lasso_pred_2way = lasso_pred_2way) %>% 
+  slice(-train) %>% 
+  summarize(rmse_ea1c = sqrt(mean((ea1c - most_recent_a1c_value)^2)),
+            rmse_lm = sqrt(mean((lm_pred - most_recent_a1c_value)^2)),
+            rmse_lasso = sqrt(mean((lasso_pred - most_recent_a1c_value)^2)),
+            rmse_lasso_2way = sqrt(mean((lasso_pred_2way - most_recent_a1c_value)^2))) 
+```
+
