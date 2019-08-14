@@ -39,30 +39,28 @@ load_file <- function(filepath, required_headers) {
     group_map(~ list(id = pull(.y, "id"), data = .x))
 }
 
+load_single_patient_file <- function(filepath) {
 
+  if (path_ext(filepath) != "csv") {
+    abort("CGM datafile must be a CSV.")
+  }
 
-# load_individual_file <- function(filepath) {
-#   
-#   if (path_ext(filepath) != "csv") {
-#     abort("CGM datafile must be a CSV.")
-#   }
-#   
-#   bg_df <- read_csv(filepath)
-#   
-#   if (! all(colnames(bg_df) %in% CGM_HEADERS)) {
-#     abort(str_c("CGM datafile must contain ", CGM_HEADERS))
-#   }
-#   
-#   id <- path_ext_remove(path_file(filepath))
-#   
-#   list(id = id, data = bg_df)
-# }
-# 
-# load_dir <- function(dirpath) {
-#   
-#   if (! is_dir(dirpath)) {
-#     abort("CGM data folder must be a directory.")
-#   }
-#   
-#   dir_map(dirpath, load_individual_file)
-# }
+  bg_df <- read_csv(filepath)
+
+  if (! all(colnames(bg_df) %in% CGM_HEADERS)) {
+    abort(str_c("CGM datafile must contain ", CGM_HEADERS))
+  }
+
+  id <- path_ext_remove(path_file(filepath))
+
+  list(id = id, data = bg_df)
+}
+
+load_dir_of_patients <- function(dirpath) {
+
+  if (! is_dir(dirpath)) {
+    abort("CGM data folder must be a directory.")
+  }
+
+  dir_map(dirpath, load_single_patient_file)
+}
