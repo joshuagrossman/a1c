@@ -62,26 +62,32 @@ output: html_notebook
 
 ```{r}
 library(glmnet)
+```
 
+```{r}
 datasets <- c(
   "RT_CGM_Randomized_Clinical_Trial",
-  "CMetforminDataset",
+  # "CMetforminDataset",
+  # ^ turns out CMetforminDataset does not have cgm measurements before a1c is measured.
+  # cgm is done for a week AFTER each a1c measurement during the study....
   "Protocol_F",
   "Protocol_H"
 )
 
+MAX_DAYS <- 30
+
 create_feature_df <- function(dataset_name) {
   
-  cgm <- load_file(str_c("~/a1c/data_gathering/data/", dataset_name, "/clean/cgm.csv"), CGM_HEADERS)
+  cgm <- load_file(str_c("~/a1c/data/", dataset_name, "/clean/cgm.csv"), CGM_HEADERS)
   
-  a1c <- load_file(str_c("~/a1c/data_gathering/data/", dataset_name, "/clean/a1c.csv"), A1C_HEADERS)
+  a1c <- load_file(str_c("~/a1c/data/", dataset_name, "/clean/a1c.csv"), A1C_HEADERS)
   
-  measurements <- load_file(str_c("~/a1c/data_gathering/data/", dataset_name, "/clean/measurements.csv"), NULL)
+  measurements <- load_file(str_c("~/a1c/data/", dataset_name, "/clean/measurements.csv"), NULL)
   
   combined <- combine_cgm_data_with_other_data(cgm, a1c, "a1c") %>% 
                 combine_cgm_data_with_other_data(measurements, "measurements")
   
-  filtered <- filter_all_cgm_by_a1c(combined)
+  filtered <- map(combined, filter_individual_cgm_by_a1c, max_days = MAX_DAYS)
   
   filtered_with_features <- map(filtered, ~ append(.x, list(cgm_features = make_cgm_feature_df(.x, data_name = "filtered_cgm_data"))))
   
@@ -89,7 +95,8 @@ create_feature_df <- function(dataset_name) {
                             ~ c(id = .[["id"]],
                                 .[["cgm_features"]], 
                                 .[["measurements"]],
-                                most_recent_a1c_value = .[["most_recent_a1c_value"]]))
+                                most_recent_a1c_value = .[["most_recent_a1c_value"]],
+                                most_recent_a1c_date = .[["most_recent_a1c_date"]]))
   
   reduce(feature_df_as_list, bind_rows)
 }
@@ -99,17 +106,15 @@ feature_df_as_list <- future_map(datasets, create_feature_df)
 feature_df <- reduce(feature_df_as_list, bind_rows)
 ```
 
-Remove columns where more than 5% of numeric entries are NA?
-
 ```{r}
 feature_df <- filter(feature_df, ! is.na(cgm_days) & cgm_days > 6)
-
-feature_df <- mutate(feature_df, ea1c = 3.31 + mean_bg_full_day * 0.02392)
 ```
 
 ```{r}
 feature_df <- feature_df %>% 
-  select(-id, -cgm_days, -datafile, -study_start_date, -dataset, -cgm_name) %>% 
+  select(-id, -cgm_days, -first_day_cgm, -last_day_cgm, 
+         -datafile, -study_start_date, -cgm_name, -age, -ethnicity,
+         -most_recent_a1c_date, -years_since_diag, -metformin, -dataset) %>% 
   na.omit()
 ```
 
@@ -153,7 +158,8 @@ lasso_pred_2way <- predict(lasso_fit_2way, x2way)
 
 ```{r}
 feature_df %>% 
-  mutate(lm_pred = lm_pred,
+  mutate(ea1c = 3.31 + (mean_bg_full_day * 0.02392),
+         lm_pred = lm_pred,
          lasso_pred = lasso_pred,
          lasso_pred_2way = lasso_pred_2way) %>% 
   slice(-train) %>% 

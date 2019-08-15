@@ -1,4 +1,4 @@
-source("lib/load.R")
+source("lib/feature_extraction/load.R")
 
 ################################## GLOBALS #####################################
 
@@ -41,17 +41,18 @@ make_cgm_feature_df <- function(cgm_data_with_id,
   id <- as.character(cgm_data_with_id[[id_name]])
   cgm_data <- cgm_data_with_id[[data_name]]
   
-  if (is.na(cgm_data)) {
+  if (! is_tibble(cgm_data)) {
+    warning("No cgm data provided. Returning NULL.")
+    return(NULL)
+  }
+  
+  if (nrow(cgm_data) < MIN_RECORDINGS_REQUIRED) {
+    warning(str_c("Less than ", MIN_RECORDINGS_REQUIRED, 
+                  " data points. Returning NULL."))
     return(NULL)
   }
   
   cgm_data <- arrange(cgm_data, datetime)
-  
-  if (nrow(cgm_data) < MIN_RECORDINGS_REQUIRED) {
-    warning(str_c("Less than ", MIN_RECORDINGS_REQUIRED, 
-                  "data points. Returning NULL."))
-    return(NULL)
-  }
   
   sufficient_cgm_data <- filter_insufficient_data(cgm_data)
   
@@ -111,11 +112,11 @@ filter_data_by_date <- function(bg_df,
                                 datetime_name = "datetime") {
   # Removes CGM data for invalid dates.
   
-  start_date <- as.Date(start_date_chr)
-  end_date <- as.Date(end_date_chr)
+  start_date <- as_date(start_date_chr)
+  end_date <- as_date(end_date_chr)
   
   bg_df <-
-    filter(bg_df, between(.data[[datetime_name]], start_date, end_date))
+    filter(bg_df, between(as_date(.data[[datetime_name]]), start_date, end_date))
 }
                                 
 filter_insufficient_data <- function(bg_df, cgm_day_name = "cgm_day") {
@@ -166,6 +167,15 @@ check_if_sufficient_length <- function(v) {
     return(NA)
   }
   v
+}
+
+determine_first_and_last_cgm_day <- function(bg_df, cgm_day_name = "cgm_day") {
+  # Returns the first and last days of CGM data as a vector
+  
+  cgm_days <- unique(pull(bg_df, cgm_day_name))
+  
+  c(first_day_cgm = min(cgm_days, na.rm = T),
+    last_day_cgm = max(cgm_days, na.rm = T))
 }
 
 calculate_cgm_days <- function(bg_df, cgm_day_name = "cgm_day") {
@@ -307,6 +317,7 @@ calculate_all_bg_stats <- function(bg_df) {
   bg_df <- make_bg_booleans(bg_df)
   
   features <- c(calculate_cgm_days(bg_df),
+                determine_first_and_last_cgm_day(bg_df),
                 calculate_simple_bg_stat(bg_df, na_mean, "mean"),
                 calculate_simple_bg_stat(bg_df, na_sd, "sd"),
                 calculate_simple_bg_stat(bg_df, na_cv, "cv"))

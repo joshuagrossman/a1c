@@ -32,8 +32,7 @@ cleaned_dfs$cgm <-
 
 cleaned_dfs$a1c <-
   dfs$tblALabHbA1c %>% 
-  select(id = 
-           PtID, 
+  select(id = PtID, 
          date = LabHbA1cDt, 
          a1c = LabA1cResult)
 

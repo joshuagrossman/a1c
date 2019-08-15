@@ -1,4 +1,4 @@
-source("lib/load.R")
+source("lib/feature_extraction/load.R")
 
 ################# COMBINING OTHER PATIENT DATA WITH CGM DATA ###################
 
@@ -13,7 +13,7 @@ combine_cgm_data_with_other_data <- function(cgm_data,
                                      other_data_name,
                                      id_name = "id",
                                      data_name = "data") {
-  # Input: Two lists of sub-lists, with each sublist containing the patient id
+  # Input: Two lists of sub-lists, with each sublist containing the patient
   # and associated cgm or other data.
   #
   # Output: One list of sub-lists, each containing id, other data, cgm data for a single patient.
@@ -54,11 +54,11 @@ identify_most_recent_a1c_with_cgm_data <- function(individual_patient_data,
   bg_df <- individual_patient_data[[data_name]]
   a1c <- individual_patient_data[[a1c_name]]
   
-  max_cgm_date <- max(pull(bg_df, datetime_name))
-  min_cgm_date <- min(pull(bg_df, datetime_name))
+  max_cgm_date <- as_date(max(pull(bg_df, datetime_name), na.rm = T))
+  min_cgm_date <- as_date(min(pull(bg_df, datetime_name), na.rm = T))
   
   most_recent_a1c <- a1c %>% 
-    filter(between(.data[[date_name]], min_cgm_date, max_cgm_date)) %>% 
+    filter(between(as_date(date), min_cgm_date, max_cgm_date)) %>% 
     arrange(desc(date)) %>% 
     slice(1)
   
@@ -70,17 +70,17 @@ identify_most_recent_a1c_with_cgm_data <- function(individual_patient_data,
   
   c(individual_patient_data, 
     most_recent_a1c_value = pull(most_recent_a1c, a1c_name),
-    most_recent_a1c_date = pull(most_recent_a1c, date_name))
+    most_recent_a1c_date = as_date(pull(most_recent_a1c, date_name)))
   
 }
 
 filter_cgm_by_date <- function(bg_df, end_date, max_days) {
   # Removes CGM data that falls after `end_date` or before `end_date` - `max_days`
     
-  end_date_as_date <- as.POSIXct(end_date, origin="1970-01-01")
+  end_date_as_date <- as_date(end_date)
     
   bg_df %>%
-    filter(between(datetime, 
+    filter(between(as_date(datetime), 
                    end_date_as_date - days(max_days),
                    end_date_as_date - days(1)))
 }
@@ -103,11 +103,4 @@ filter_individual_cgm_by_a1c <- function(individual_patient_data, max_days) {
                        max_days)
   
   recent_a1c_identifed
-}
-
-filter_all_cgm_by_a1c <- function(patient_data, max_days = 30) {
-  
-  map(patient_data, 
-      filter_individual_cgm_by_a1c, 
-      max_days)
 }
