@@ -170,7 +170,6 @@ mean_bg_full_day <- feature_df$mean_bg_full_day
 
 feature_df <- feature_df %>% 
   select(-id, 
-         -cgm_days, 
          -first_day_cgm, 
          -last_day_cgm, 
          -datafile, 
@@ -534,10 +533,7 @@ coef(lasso_fit$finalModel, lasso_fit$bestTune$lambda)
 ```
 
 ```{r}
-# remake feature_df to include cgm_days
-
 accuracy_by_day <- prediction_df %>% 
-  inner_join(feature_df, by = "mean_bg_nighttime") %>% 
   .[-training, ] %>% 
   mutate(resid_rf = outcome_a1c - rf_pred,
          resid_lasso = outcome_a1c - lasso_pred,
