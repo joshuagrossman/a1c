@@ -62,6 +62,13 @@ output: html_notebook
 
 ```{r}
 library(glmnet)
+library(caret)
+library(tidyverse)
+library(RANN)
+library(elasticnet)
+library(modelr)
+library(randomForest)
+library(gbm)
 ```
 
 ```{r}
@@ -78,25 +85,39 @@ MAX_DAYS <- 30
 
 create_feature_df <- function(dataset_name) {
   
-  cgm <- load_file(str_c("~/a1c/data/", dataset_name, "/clean/cgm.csv"), CGM_HEADERS)
+  cgm <- load_file(str_c("~/a1c/data/", 
+                         dataset_name, 
+                         "/clean/cgm.csv"), 
+                   CGM_HEADERS)
   
-  a1c <- load_file(str_c("~/a1c/data/", dataset_name, "/clean/a1c.csv"), A1C_HEADERS)
+  a1c <- load_file(str_c("~/a1c/data/", 
+                         dataset_name, 
+                         "/clean/a1c.csv"), 
+                   A1C_HEADERS)
   
-  measurements <- load_file(str_c("~/a1c/data/", dataset_name, "/clean/measurements.csv"), NULL)
+  measurements <- load_file(str_c("~/a1c/data/", 
+                                  dataset_name, 
+                                  "/clean/measurements.csv"), 
+                            NULL)
   
   combined <- combine_cgm_data_with_other_data(cgm, a1c, "a1c") %>% 
                 combine_cgm_data_with_other_data(measurements, "measurements")
   
-  filtered <- map(combined, filter_individual_cgm_by_a1c, max_days = MAX_DAYS)
+  filtered <- map(combined, 
+                  filter_individual_cgm_by_a1c, 
+                  max_days = MAX_DAYS)
   
-  filtered_with_features <- map(filtered, ~ append(.x, list(cgm_features = make_cgm_feature_df(.x, data_name = "filtered_cgm_data"))))
+  filtered_with_features <- 
+    map(filtered, 
+        ~ append(.x, list(cgm_features = make_cgm_feature_df(.x, data_name = "filtered_cgm_data"))))
   
-  feature_df_as_list <- map(filtered_with_features, 
-                            ~ c(id = .[["id"]],
-                                .[["cgm_features"]], 
-                                .[["measurements"]],
-                                most_recent_a1c_value = .[["most_recent_a1c_value"]],
-                                most_recent_a1c_date = .[["most_recent_a1c_date"]]))
+  feature_df_as_list <- 
+    map(filtered_with_features, 
+        ~ c(id = .[["id"]],
+            .[["cgm_features"]], 
+            .[["measurements"]],
+            most_recent_a1c_value = .[["most_recent_a1c_value"]],
+            most_recent_a1c_date = .[["most_recent_a1c_date"]]))
   
   reduce(feature_df_as_list, bind_rows)
 }
@@ -107,65 +128,503 @@ feature_df <- reduce(feature_df_as_list, bind_rows)
 ```
 
 ```{r}
-feature_df <- filter(feature_df, ! is.na(cgm_days) & cgm_days > 6)
+feature_df <- filter(feature_df, 
+                     ! is.na(cgm_days) & 
+                     cgm_days > 6 &
+                     between(most_recent_a1c_value, 5.5, 11.5)) %>%
+                mutate(bmi = weight / height / 100,
+                       
+                       race = ifelse(race == "Black/African American",
+                                                 "Black",
+                                                 race),
+                       race = ifelse(race %in% c("Black", "White"), race, NA),
+                       
+                       ethnicity = ifelse(ethnicity == "Unknown/not reported",
+                                                 NA,
+                                                 ethnicity),
+                       ethnicity = ifelse(ethnicity == "Non-Hispanic",
+                                                 "Not Hispanic or Latino",
+                                                 ethnicity),
+                       ethnicity = ifelse(ethnicity %in% c("Hispanic or Latino",
+                                                           "Not Hispanic or Latino"),
+                                          ethnicity,
+                                          NA))
+
+# get rid of massive 411 cm height outlier
+height_outlier_row <- (feature_df$datafile == "156.csv" & 
+                         feature_df$dataset == "Protocol_F")
+
+feature_df$height[height_outlier_row] <- NA
 ```
 
 ```{r}
+#write_csv(feature_df, "features.csv")
+```
+
+```{r}
+colnames(feature_df)
+```
+
+```{r}
+mean_bg_full_day <- feature_df$mean_bg_full_day
+
 feature_df <- feature_df %>% 
-  select(-id, -cgm_days, -first_day_cgm, -last_day_cgm, 
-         -datafile, -study_start_date, -cgm_name, -age, -ethnicity,
-         -most_recent_a1c_date, -years_since_diag, -metformin, -dataset) %>% 
-  na.omit()
+  select(-id, 
+         -cgm_days, 
+         -first_day_cgm, 
+         -last_day_cgm, 
+         -datafile, 
+         -study_start_date, 
+         -dataset,
+         -cgm_name,
+         -most_recent_a1c_date) %>% 
+  
+  # very few patients are hispanic (<20 out of >800), so removing bc near zero variance.
+  select(-ethnicity) %>% 
+  
+  # perfectly correlated with _nighttime and _daytime columns, so removing
+  select(-ends_with("full_day"))
 ```
 
 ```{r}
-mm <- model.matrix(most_recent_a1c_value ~ ., data = feature_df)
-x <- mm[,-1]
-
-mm2way <- model.matrix(most_recent_a1c_value ~ ., data = feature_df)
-x2way <- mm2way[,-1]
-
-y <- feature_df$most_recent_a1c_value
+colnames(feature_df)
 ```
 
 ```{r}
-train <- sample(1:nrow(mm), nrow(mm) * 0.8)
+ea1c <- 3.38 + 0.02345 * mean_bg_full_day
+gmi <- 3.31 + 0.02392 * mean_bg_full_day
 
-lm_fit <- lm(most_recent_a1c_value ~ mean_bg_full_day, feature_df[train, ])
+outcome_a1c <- feature_df$most_recent_a1c_value
 
-lm_pred <- predict(lm_fit, feature_df)
+lm_df <- data.frame(mean_bg_full_day = mean_bg_full_day, 
+                       outcome_a1c = outcome_a1c)
 ```
 
 ```{r}
-lambdas <- 10 ^ seq(10, -2, length = 100)
-
-cv_out <- cv.glmnet(x[train,], y[train], alpha = 1)
-lambda <- cv_out$lambda.min
-
-lasso_fit <- glmnet(x, y, alpha = 1, lambda = lambda)
-
-lasso_pred <- predict(lasso_fit, x)
+dummied <- 
+  dummyVars(most_recent_a1c_value ~ ., feature_df) %>% 
+  predict(feature_df)
 ```
 
 ```{r}
-cv_out <- cv.glmnet(x2way[train,], y[train], alpha = 1)
-lambda <- cv_out$lambda.min
-
-lasso_fit_2way <- glmnet(x2way, y, alpha = 1, lambda = lambda)
-
-lasso_pred_2way <- predict(lasso_fit_2way, x2way)
+pre_processed <- 
+  preProcess(dummied, method = "medianImpute") %>% 
+  predict(dummied) %>% 
+  as.data.frame()
 ```
 
 ```{r}
-feature_df %>% 
-  mutate(ea1c = 3.31 + (mean_bg_full_day * 0.02392),
-         lm_pred = lm_pred,
-         lasso_pred = lasso_pred,
-         lasso_pred_2way = lasso_pred_2way) %>% 
-  slice(-train) %>% 
-  summarize(rmse_ea1c = sqrt(mean((ea1c - most_recent_a1c_value)^2)),
-            rmse_lm = sqrt(mean((lm_pred - most_recent_a1c_value)^2)),
-            rmse_lasso = sqrt(mean((lasso_pred - most_recent_a1c_value)^2)),
-            rmse_lasso_2way = sqrt(mean((lasso_pred_2way - most_recent_a1c_value)^2))) 
+set.seed(1)
+```
+
+```{r}
+training <- createDataPartition(pre_processed[ , "mean_bg_daytime"], 
+                    p = 0.65,
+                    list = FALSE)
+
+train_df <- pre_processed[training, ]
+test_df <- pre_processed[-training, ]
+
+train_df_no_race <- select(train_df, -raceBlack, -raceWhite)
+test_df_no_race <- select(test_df, -raceBlack, -raceWhite)
+
+train_outcome <- outcome_a1c[training]
+test_outcome <- outcome_a1c[-training]
+```
+
+```{r}
+lm_fit <- lm(outcome_a1c ~ 1 + mean_bg_full_day, lm_df[training, ])
+
+lm_pred <- predict(lm_fit, lm_df)
+```
+
+```{r}
+# Baseline RMSEs
+
+(ea1c_results <- postResample(ea1c[-training], test_outcome))
+(gmi_results <- postResample(gmi[-training], test_outcome))
+(lm_results <- postResample(lm_pred[-training], test_outcome))
+```
+
+```{r}
+fit_control <- trainControl(method = "repeatedcv",
+                            number = 5)
+```
+
+```{r}
+lambdas <- 10 ^ seq(-3, 1, length = 100)
+```
+
+```{r}
+lasso_fit <- train(train_df,
+                   train_outcome,
+                   method = "glmnet",
+                   tuneGrid = data.frame(alpha = 1,
+                                          lambda = lambdas),
+                   trControl = fit_control)
+```
+
+```{r}
+lasso_fit_no_race <- train(train_df_no_race,
+                           train_outcome,
+                           method = "glmnet",
+                           tuneGrid = data.frame(alpha = 1,
+                                                  lambda = lambdas),
+                           trControl = fit_control)
+```
+
+```{r}
+plot(lasso_fit, xTrans = log)
+```
+
+```{r}
+lasso_pred <- predict(lasso_fit, test_df)
+(lasso_results <- postResample(lasso_pred, test_outcome))
+```
+
+```{r}
+lasso_pred_no_race <- predict(lasso_fit_no_race, test_df_no_race)
+(lasso_results_no_race <- postResample(lasso_pred_no_race, test_outcome))
+```
+
+```{r}
+lasso2_fit <- train(train_df,
+                    train_outcome,
+                    method = "glmnet",
+                    tuneGrid = data.frame(alpha = 1,
+                                          lambda = lambdas),
+                    trControl = fit_control)
+
+lasso2_pred <- predict(lasso2_fit, test_df)
+(lasso2_results <- postResample(lasso2_pred, test_outcome))
+```
+
+```{r}
+set.seed(1)
+
+gbmGrid <- expand.grid(.n.trees = (15:25)*10, 
+                      .interaction.depth = (5:10)*2, 
+                      .shrinkage = 0.05, 
+                      .n.minobsinnode = (1:5)*2)
+
+gbmFit <- train(train_df,
+                train_outcome,
+                method = "gbm", 
+                trControl = fit_control,
+                verbose = FALSE, 
+                tuneGrid = gbmGrid)
+```
+
+```{r}
+plot(gbmFit)
+```
+
+```{r}
+gbm_pred <- predict(gbmFit, test_df)
+(gbm_results <- postResample(gbm_pred, test_outcome))
+```
+
+```{r}
+rpart_fit <- train(train_df,
+                   train_outcome,
+                   method = "rpart",
+                   tuneGrid = expand.grid(cp = (seq(1,30,3)/1000)),
+                   trControl = fit_control)
+```
+
+```{r}
+plot(rpart_fit)
+```
+
+```{r}
+rpart_pred <- predict(rpart_fit, test_df)
+(rpart_results <- postResample(rpart_pred, test_outcome))
+```
+
+```{r}
+rf_fit <- train(train_df,
+                train_outcome,
+                method = "rf",
+                tuneGrid = expand.grid(.mtry=c(1:15)),
+                trControl = fit_control)
+```
+
+```{r}
+rf_fit_no_race <- train(train_df_no_race,
+                        train_outcome,
+                        method = "rf",
+                        tuneGrid = expand.grid(.mtry=c(1:15)),
+                        trControl = fit_control)
+```
+
+```{r}
+plot(rf_fit)
+```
+
+```{r}
+rf_pred <- predict(rf_fit, test_df)
+(rf_results <- postResample(rf_pred, test_outcome))
+```
+
+```{r}
+rf_pred_no_race <- predict(rf_fit_no_race, test_df)
+(rf_results_no_race <- postResample(rf_pred_no_race, test_outcome))
+```
+
+```{r}
+data.frame(ea1c_results,
+           gmi_results,
+           lm_results,
+           lasso_results,
+           lasso_results_no_race,
+           lasso2_results,
+           gbm_results,
+           rpart_results,
+           rf_results,
+           rf_results_no_race) %>% 
+  t() %>% 
+  data.frame()
+```
+
+```{r}
+prediction_df <- 
+  pre_processed %>% 
+  mutate(ea1c = ea1c,
+         gmi = gmi,
+         outcome_a1c = outcome_a1c) %>% 
+  add_predictions(lasso_fit, var = "lasso_pred") %>% 
+  add_predictions(rf_fit, var = "rf_pred") %>% 
+  add_predictions(lasso_fit_no_race, var = "lasso_pred_no_race") %>% 
+  add_predictions(rf_fit_no_race, var = "rf_pred_no_race")
+
+# ggplot(prediction_df) +
+#   geom_point(aes(gmi, outcome_a1c), color = "red", alpha = 0.1) +
+# geom_point(aes(lasso_pred, outcome_a1c), color = "blue", alpha = 0.1) +
+#   geom_abline() +
+#   xlab("pred")
+```
+
+```{r}
+binned_a1c <- 
+  prediction_df %>% 
+  .[-training, ] %>% 
+  mutate(resid_gmi = outcome_a1c - gmi,
+         resid_lasso = outcome_a1c - lasso_pred,
+         resid_lasso_no_race= outcome_a1c - lasso_pred_no_race,
+         resid_rf = outcome_a1c - rf_pred,
+         gmi_cut = round(gmi) - 0.2,
+         lasso_pred_cut = round(lasso_pred),
+         lasso_pred_no_race_cut = round(lasso_pred_no_race) + 0.2,
+         rf_pred_cut = round(rf_pred) + 0.2)
+```
+
+```{r}
+# binned residuals versus a1c
+  
+ggplot(binned_a1c) +
+  geom_jitter(aes(x = gmi_cut, 
+                 y = resid_gmi),
+             color = "red",
+             width = 0.05) +
+  geom_boxplot(aes(x = gmi_cut, 
+                   group = gmi_cut,
+                   y = resid_gmi),
+               fill = "red",
+               alpha = 0.5,
+               width = 0.2) +
+  geom_jitter(aes(x = lasso_pred_cut, 
+                 group = lasso_pred_cut,
+                 y = resid_lasso),
+             color = "blue",
+             width = 0.05) +
+  geom_boxplot(aes(x = lasso_pred_cut, 
+                   group = lasso_pred_cut,
+                   y = resid_lasso),
+               fill = "blue",
+               alpha = 0.5,
+               width = 0.2) +
+  # geom_jitter(aes(x = rf_pred_cut, 
+  #                group = rf_pred_cut,
+  #                y = resid_rf),
+  #            color = "black",
+  #            width = 0.05) +
+  # geom_boxplot(aes(x = rf_pred_cut,
+  #                  group = rf_pred_cut,
+  #                  y = resid_rf),
+  #              fill = "black",
+  #              alpha = 0.5,
+  #              width = 0.2) +
+  geom_jitter(aes(x = lasso_pred_no_race_cut, 
+                 group = lasso_pred_no_race_cut,
+                 y = resid_lasso_no_race),
+             color = "black",
+             width = 0.05) +
+  geom_boxplot(aes(x = lasso_pred_no_race_cut, 
+                   group = lasso_pred_no_race_cut,
+                   y = resid_lasso_no_race),
+               fill = "black",
+               alpha = 0.5,
+               width = 0.2) +
+    ggtitle("Red = GMI, Blue = LASSO, Black = LASSO no race") +
+    xlab("Predicted HbA1c") +
+    ylab("Residual") +
+    geom_hline(yintercept = 0,
+               linetype = "dashed")
+```
+
+```{r}
+# binned residuals versus a1c
+  
+ggplot(binned_a1c) +
+  geom_jitter(aes(x = lasso_pred_cut, 
+                 group = lasso_pred_cut,
+                 y = resid_lasso),
+             color = "red",
+             width = 0.05) +
+  geom_boxplot(aes(x = lasso_pred_cut, 
+                   group = lasso_pred_cut,
+                   y = resid_lasso),
+               fill = "red",
+               alpha = 0.5,
+               width = 0.2) +
+  geom_jitter(aes(x = lasso_pred_no_race_cut, 
+                 group = lasso_pred_no_race_cut,
+                 y = resid_lasso_no_race),
+             color = "blue",
+             width = 0.05) +
+  geom_boxplot(aes(x = lasso_pred_no_race_cut, 
+                   group = lasso_pred_no_race_cut,
+                   y = resid_lasso_no_race),
+               fill = "blue",
+               alpha = 0.5,
+               width = 0.2) +
+    ggtitle("Red = LASSO, Blue = LASSO no race") +
+    xlab("Predicted a1c") +
+    ylab("Residual value") +
+    geom_hline(yintercept = 0)
+```
+
+```{r}
+race_prediction_df <- 
+  pre_processed %>%
+  .[-training, ] %>% 
+  add_predictions(rf_fit, var = "rf_pred")
+
+race_swapped <- 
+  race_swapped_prediction_df %>% 
+  mutate(raceBlack_swapped = if_else(raceWhite == 1, 1, 0),
+         raceWhite_swapped = if_else(raceBlack == 1, 1, 0),
+         raceBlack = raceBlack_swapped,
+         raceWhite = raceWhite_swapped) %>% 
+  add_predictions(rf_fit, var = "rf_pred_race_swapped")
+
+white <- race_prediction_df$raceWhite == 1
+black <- race_prediction_df$raceBlack == 1
+
+w2b <- race_prediction_df$rf_pred[white] - race_swapped$rf_pred_race_swapped[white]
+
+b2w <- race_prediction_df$rf_pred[black] - race_swapped$rf_pred_race_swapped[black]
+
+hist(w2b)
+hist(b2w)
+```
+
+```{r}
+coef(lasso_fit$finalModel, lasso_fit$bestTune$lambda)
+```
+
+```{r}
+# remake feature_df to include cgm_days
+
+accuracy_by_day <- prediction_df %>% 
+  inner_join(feature_df, by = "mean_bg_nighttime") %>% 
+  .[-training, ] %>% 
+  mutate(resid_rf = outcome_a1c - rf_pred,
+         resid_lasso = outcome_a1c - lasso_pred,
+         cgm_days_cut = cut(cgm_days, c(0,15,30), labels = FALSE)) %>% 
+  # group_by(cgm_days_cut) %>% 
+  # summarize(mean_rf_resid = na_mean(resid_rf),
+  #           sd_rf_resid = na_sd(resid_rf),
+  #           mean_lasso_resid = na_mean(resid_lasso),
+  #           sd_lasso_resid = na_sd(resid_lasso)) %>% 
+  # ungroup() %>% 
+  # rownames_to_column(var = "days") %>% 
+  mutate(cgm_days_cut = 15 * (as.numeric(cgm_days_cut) - 1))
+
+accuracy_by_day %>% 
+  ggplot() +
+  geom_hline(yintercept = 0) +
+  geom_jitter(aes(x = cgm_days_cut - 0.5,
+                  y = resid_rf),
+             color = "black",
+             width = 0.25) + 
+  geom_boxplot(aes(x = cgm_days_cut - 0.5,
+                   group = cgm_days_cut - 0.5,
+                     y = resid_rf),
+                fill = "black",
+                width = 0.5,
+                alpha = 0.5) +
+  geom_jitter(aes(x = cgm_days_cut + 0.5,
+                 y = resid_lasso),
+             color = "blue",
+             width = 0.25) + 
+  geom_boxplot(aes(x = cgm_days_cut + 0.5,
+                   group = cgm_days_cut + 0.5,
+                     y = resid_lasso),
+                fill = "blue",
+                width = 0.5,
+                alpha = 0.5) +
+  ggtitle("Residuals by days of data, Black = RF, Blue = LASSO") +
+  xlab("Days of data available") +
+  ylab("Residual value")
+```
+
+```{r}
+# # remake feature_df to include cgm_days
+# 
+# prediction_df %>% 
+#   inner_join(feature_df, by = "mean_bg_nighttime") %>% 
+#   .[-training, ] %>% 
+#   mutate(resid_lasso = outcome_a1c - lasso_pred,
+#          cgm_days_cut = cut(cgm_days, seq(0,30,3))) %>% 
+#   group_by(cgm_days_cut) %>% 
+#   summarize(mean_lasso_resid = na_mean(resid_lasso),
+#             sd_lasso_resid = na_sd(resid_lasso)) %>% 
+#   ungroup() %>% 
+#   rownames_to_column(var = "days") %>% 
+#   mutate(days = 4 + as.numeric(days) * 3) %>% 
+#   ggplot() +
+#   geom_hline(yintercept = 0) +
+#   geom_point(aes(x = days,
+#                  y = mean_lasso_resid)) + 
+#   geom_errorbar(aes(x = days,
+#                      ymin = mean_lasso_resid - sd_lasso_resid,
+#                      ymax = mean_lasso_resid + sd_lasso_resid)) +
+#   ggtitle("RF residuals by days of data available") +
+#   xlab("Days of data available") +
+#   ylab("Mean residual +- 1SD")
+```
+
+```{r}
+# binned_a1c_gmi <-
+#   binned_a1c %>% 
+#   group_by(gmi_cut) %>%
+#   summarize(mean_gmi_resid = na_mean(resid_gmi),
+#             sd_gmi_resid = na_sd(resid_gmi)) %>% 
+#   ungroup()
+# 
+# binned_a1c_lasso <-
+#   binned_a1c %>% 
+#   group_by(lasso_pred_cut) %>%
+#   summarize(mean_lasso_resid = na_mean(resid_lasso),
+#             sd_lasso_resid = na_sd(resid_lasso)) %>% 
+#   ungroup()
+# 
+# binned_a1c_rf <-
+#   binned_a1c %>% 
+#   group_by(rf_pred_cut) %>%
+#   summarize(mean_rf_resid = na_mean(resid_rf),
+#             sd_rf_resid = na_sd(resid_rf)) %>% 
+#   ungroup()
 ```
 

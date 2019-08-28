@@ -57,7 +57,8 @@ identify_most_recent_a1c_with_cgm_data <- function(individual_patient_data,
   max_cgm_date <- as_date(max(pull(bg_df, datetime_name), na.rm = T))
   min_cgm_date <- as_date(min(pull(bg_df, datetime_name), na.rm = T))
   
-  most_recent_a1c <- a1c %>% 
+  most_recent_a1c <- a1c %>%
+    filter(! is.na(a1c)) %>% 
     filter(between(as_date(date), min_cgm_date, max_cgm_date)) %>% 
     arrange(desc(date)) %>% 
     slice(1)

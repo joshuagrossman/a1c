@@ -322,7 +322,7 @@ calculate_all_bg_stats <- function(bg_df) {
                 calculate_simple_bg_stat(bg_df, na_sd, "sd"),
                 calculate_simple_bg_stat(bg_df, na_cv, "cv"))
   
-  percent_in_range <- map(CORE_RANGE_NAMES, 
+  percent_in_range <- map(RANGE_NAMES, 
                         ~ calculate_percent_in_given_range(bg_df, .))
   
   mean_in_range <- map(CORE_RANGE_NAMES, 
