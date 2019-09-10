@@ -1,4 +1,4 @@
-source("lib/cgm_feature_extraction.R")
+source("lib/feature_extraction/cgm_feature_extraction.R")
 
 create_cgm_features <- function(cgm_df) {
   cgm_df %>% 
