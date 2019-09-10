@@ -27,7 +27,7 @@ output: html_notebook
 # DONE SD BG when low / high
 
 # Number of hypo / hyperglycemic events per day
-# CV at each interval
+# DONE CV at each interval
 
 # DONE How to filter missing data? By day interval? Or by day? -- Full Day in the past
 
@@ -46,18 +46,22 @@ output: html_notebook
 
 # Google definition of fractal dimensions for curves
 
-# Keeping a list of how to analyze CGM data different ways - averaging over days versys averaging over all points
+# Keeping a list of how to analyze CGM data different ways - averaging over days versus averaging over all points
 
 # Sensitivity analysis - calculate all of these metrics for a particular person
 # removing 1, 2, 3, ... data points at random, quantify bias of missing data
 
-# Random forest, LASSO, GBM, and XGBoost, compare against eA1c
+# DONE Random forest, LASSO, GBM, and XGBoost, compare against eA1c
 
-# All two-way interactions
+# DONE All two-way interactions
 
-# 10-fold CV to tune parameters with grid search, good metric to report is R^2, 
-# scatterplot for both models of actual versus predicted, color the points by the
+# DONE 10-fold CV to tune parameters with grid search, good metric to report is R^2, 
+# DONE scatterplot for both models of actual versus predicted, color the points by the
 # value of the demographic of interest
+```
+
+```{r}
+
 ```
 
 ```{r}
@@ -69,6 +73,10 @@ library(elasticnet)
 library(modelr)
 library(randomForest)
 library(gbm)
+library(furrr)
+library(fs)
+library(rlang)
+library(gridExtra)
 ```
 
 ```{r}
@@ -132,7 +140,7 @@ feature_df <- filter(feature_df,
                      ! is.na(cgm_days) & 
                      cgm_days > 6 &
                      between(most_recent_a1c_value, 5.5, 11.5)) %>%
-                mutate(bmi = weight / height / 100,
+                mutate(bmi = weight / (height / 100)^2,
                        
                        race = ifelse(race == "Black/African American",
                                                  "Black",
@@ -287,6 +295,36 @@ lasso_pred_no_race <- predict(lasso_fit_no_race, test_df_no_race)
 ```
 
 ```{r}
+coef(lasso_fit$finalModel, lasso_fit$bestTune$lambda)
+```
+
+```{r}
+lm_lasso_fit <-
+  select(train_df,
+       cgm_days,
+       mean_bg_daytime,
+       # sd_bg_nighttime,
+       sd_bg_daytime,
+       percent_very_low_daytime,
+       # percent_low_nighttime,
+       percent_high_nighttime,
+       percent_very_high_nighttime,
+       percent_very_high_daytime,
+       in_target_range_mean_bg_nighttime,
+       high_mean_bg_nighttime,
+       high_sd_bg_daytime,
+       high_cv_bg_daytime,
+       age,
+       raceBlack,
+       bmi) %>% 
+  train(train_outcome,
+        method = "lm")
+
+lm_lasso_pred <- predict(lm_lasso_fit, test_df)
+(lm_lasso_results <- postResample(lm_lasso_pred, test_outcome))
+```
+
+```{r}
 lasso2_fit <- train(train_df,
                     train_outcome,
                     method = "glmnet",
@@ -404,6 +442,44 @@ prediction_df <-
 ```
 
 ```{r}
+prediction_df %>% 
+  ggplot() +
+  geom_point(aes(x = gmi, y = outcome_a1c), color = "red", alpha = 0.5) +
+  geom_point(aes(x = lasso_pred, y = outcome_a1c), color = "blue", alpha = 0.5) +
+  theme_light() +
+  xlab("Predicted") +
+  ylab("Actual") +
+  ggtitle("Red = GMI, Blue = LASSO") +
+  geom_abline() +
+  ggsave("together.png")
+```
+
+```{r}
+gmi_plot <- 
+  prediction_df %>% 
+  ggplot(aes(x = gmi, y = outcome_a1c)) +
+  geom_point(alpha = 0.5) + 
+  theme_light() +
+  xlab("Predicted") +
+  ylab("Actual") +
+  ggtitle("GMI") +
+  geom_abline()
+
+lasso_plot <-
+  prediction_df %>% 
+  ggplot(aes(x = lasso_pred, y = outcome_a1c)) +
+  geom_point(alpha = 0.5) + 
+  theme_light() +
+  xlab("Predicted") +
+  ylab("Actual") +
+  ggtitle("LASSO") +
+  geom_abline()
+
+arrangeGrob(gmi_plot, lasso_plot, ncol = 2) %>% 
+  ggsave("separate.png", .)
+```
+
+```{r}
 binned_a1c <- 
   prediction_df %>% 
   .[-training, ] %>% 
@@ -468,7 +544,8 @@ ggplot(binned_a1c) +
     xlab("Predicted HbA1c") +
     ylab("Residual") +
     geom_hline(yintercept = 0,
-               linetype = "dashed")
+               linetype = "dashed") +
+  theme_light()
 ```
 
 ```{r}
@@ -526,10 +603,6 @@ b2w <- race_prediction_df$rf_pred[black] - race_swapped$rf_pred_race_swapped[bla
 
 hist(w2b)
 hist(b2w)
-```
-
-```{r}
-coef(lasso_fit$finalModel, lasso_fit$bestTune$lambda)
 ```
 
 ```{r}

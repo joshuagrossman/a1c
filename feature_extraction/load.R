@@ -17,6 +17,15 @@ A1C_HEADERS <- c("id", "a1c", "date")
 
 ################################## LOAD DATA ###################################
 
+make_id_list <- function(df) {
+  # Input: Data with an `id` column
+  #
+  # Output: A list of sublists, each containing an id and its associated data
+  
+  group_by(df, id) %>% 
+    group_map(~ list(id = pull(.y, "id"), data = .x))
+}
+
 load_file <- function(filepath, required_headers) {
   # Input: Filepath to a CSV containing data for more than one patient. The
   # CSV must contain required_headers as columns.
@@ -36,8 +45,7 @@ load_file <- function(filepath, required_headers) {
     }
   }
   
-  group_by(df, id) %>% 
-    group_map(~ list(id = pull(.y, "id"), data = .x))
+  make_id_list(df)
 }
 
 load_single_patient_file <- function(filepath) {
@@ -46,15 +54,17 @@ load_single_patient_file <- function(filepath) {
     abort("CGM datafile must be a CSV.")
   }
 
-  bg_df <- read_csv(filepath)
-
-  if (! all(colnames(bg_df) %in% CGM_HEADERS)) {
-    abort(str_c("CGM datafile must contain ", CGM_HEADERS))
+  df <- read_csv(filepath)
+  
+  if (! is.null(required_headers)) {
+    if (! all(colnames(df) %in% required_headers)) {
+      abort(str_c("Datafile at `filepath` must contain ", required_headers))
+    }
   }
 
   id <- path_ext_remove(path_file(filepath))
 
-  list(id = id, data = bg_df)
+  list(id = id, data = df)
 }
 
 load_dir_of_patients <- function(dirpath) {

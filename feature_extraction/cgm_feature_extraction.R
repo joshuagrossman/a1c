@@ -7,6 +7,8 @@ MINUTES_BETWEEN_RECORDS <- c(5, 10, 15, 20)
 DAY_START <- 6
 # DAY_END assumed as midnight.
 
+# TODO: Figure out if CGM times are recorded as local time or GMT
+
 LOW_BG_LIMIT <- 70
 VERY_LOW_BG_LIMIT <- 54
 CONSERVATIVE_HIGH_BG_LIMIT <- 140
@@ -21,12 +23,57 @@ RANGE_NAMES <- c("very_low",
                  "very_high")
 
 # most relevant sources of variation in BG data
-CORE_RANGE_NAMES <- c("in_target_range", "high")
+CORE_RANGE_NAMES <- c("in_target_range", 
+                      "high")
 
 MIN_DATA_REQUIRED <- 0.7
 
 # data points required to calculate summary stats
 MIN_RECORDINGS_REQUIRED <- 10
+
+################## CGM FEATURE EXTRACTION PIPELINE #############################
+
+calculate_all_bg_stats <- function(bg_df) {
+  # Applies all bg stats functions to bg_df
+  
+  if (! is_tibble(bg_df)) {
+    abort("Argument `bg_df` of `calculate_all_bg_stats` is not a data frame.")
+  }
+  
+  bg_df <- make_bg_booleans(bg_df)
+  
+  features <- c(calculate_cgm_days(bg_df),
+                determine_first_and_last_cgm_day(bg_df),
+                calculate_simple_bg_stat(bg_df, na_mean, "mean"),
+                calculate_simple_bg_stat(bg_df, na_sd, "sd"),
+                calculate_simple_bg_stat(bg_df, na_cv, "cv"))
+  
+  percent_in_range <- map(RANGE_NAMES, 
+                          ~ calculate_percent_in_given_range(bg_df, .))
+  
+  mean_in_range <- map(CORE_RANGE_NAMES, 
+                       ~ calculate_stat_in_given_range(bg_df, 
+                                                       ., 
+                                                       na_mean, 
+                                                       "mean"))
+  
+  sd_in_range <- map(CORE_RANGE_NAMES, 
+                     ~ calculate_stat_in_given_range(bg_df, 
+                                                     ., 
+                                                     na_sd, 
+                                                     "sd"))
+  
+  cv_in_range <- map(CORE_RANGE_NAMES, 
+                     ~ calculate_stat_in_given_range(bg_df, 
+                                                     ., 
+                                                     na_cv, 
+                                                     "cv"))
+  
+  c(features, unlist(c(percent_in_range, 
+                       mean_in_range, 
+                       sd_in_range,
+                       cv_in_range)))
+}
 
 ################################## CALCULATE CGM FEATURES ######################
 
@@ -116,12 +163,15 @@ filter_data_by_date <- function(bg_df,
   end_date <- as_date(end_date_chr)
   
   bg_df <-
-    filter(bg_df, between(as_date(.data[[datetime_name]]), start_date, end_date))
+    filter(bg_df, between(as_date(.data[[datetime_name]]), 
+                          start_date, 
+                          end_date))
 }
                                 
-filter_insufficient_data <- function(bg_df, cgm_day_name = "cgm_day") {
+filter_insufficient_data <- function(bg_df, 
+                                     cgm_day_name = "cgm_day") {
   # Counts total possible CGM records for a given day and calculates the fraction
-  # of records actually recorded. Removes data from days with less than 
+  # of possible records actually recorded. Removes data from days with less than 
   # MIN_DATA_REQUIRED fraction of records present.
   
   minutes_per_record <- calculate_minutes_per_record(bg_df)
@@ -169,7 +219,8 @@ check_if_sufficient_length <- function(v) {
   v
 }
 
-determine_first_and_last_cgm_day <- function(bg_df, cgm_day_name = "cgm_day") {
+determine_first_and_last_cgm_day <- function(bg_df, 
+                                             cgm_day_name = "cgm_day") {
   # Returns the first and last days of CGM data as a vector
   
   cgm_days <- unique(pull(bg_df, cgm_day_name))
@@ -178,7 +229,8 @@ determine_first_and_last_cgm_day <- function(bg_df, cgm_day_name = "cgm_day") {
     last_day_cgm = max(cgm_days, na.rm = T))
 }
 
-calculate_cgm_days <- function(bg_df, cgm_day_name = "cgm_day") {
+calculate_cgm_days <- function(bg_df, 
+                               cgm_day_name = "cgm_day") {
   # Calculates the total number of days for which CGM data is available
   
   c(cgm_days = pull(bg_df, cgm_day_name) %>% 
@@ -188,7 +240,7 @@ calculate_cgm_days <- function(bg_df, cgm_day_name = "cgm_day") {
 
 calculate_simple_bg_stat <- function(bg_df, f, stat_name) {
   # bg_df: dataframe with CGM data, 
-  # f: function to perform on glucose values,
+  # f: function to apply to glucose values,
   # stat_name: a string describing f
   #
   # Output: a named vector of the values calculated by applying f to glucose
@@ -308,48 +360,6 @@ calculate_stat_in_given_range <- function(bg_df, range_name, f, stat_name) {
   
   stat_in_range_features
 }
-
-################################## STATS PIPELINE ##############################
-
-calculate_all_bg_stats <- function(bg_df) {
-  # Applies all bg stats functions to bg_df
-  
-  bg_df <- make_bg_booleans(bg_df)
-  
-  features <- c(calculate_cgm_days(bg_df),
-                determine_first_and_last_cgm_day(bg_df),
-                calculate_simple_bg_stat(bg_df, na_mean, "mean"),
-                calculate_simple_bg_stat(bg_df, na_sd, "sd"),
-                calculate_simple_bg_stat(bg_df, na_cv, "cv"))
-  
-  percent_in_range <- map(RANGE_NAMES, 
-                        ~ calculate_percent_in_given_range(bg_df, .))
-  
-  mean_in_range <- map(CORE_RANGE_NAMES, 
-                          ~ calculate_stat_in_given_range(bg_df, 
-                                                             ., 
-                                                             na_mean, 
-                                                             "mean"))
-  
-  sd_in_range <- map(CORE_RANGE_NAMES, 
-                       ~ calculate_stat_in_given_range(bg_df, 
-                                                          ., 
-                                                          na_sd, 
-                                                          "sd"))
-  
-  cv_in_range <- map(CORE_RANGE_NAMES, 
-                     ~ calculate_stat_in_given_range(bg_df, 
-                                                     ., 
-                                                     na_cv, 
-                                                     "cv"))
-  
-   c(features, unlist(c(percent_in_range, 
-                        mean_in_range, 
-                        sd_in_range,
-                        cv_in_range)))
-}
-
-
 
 ################################## DEPRECATED ##################################
 

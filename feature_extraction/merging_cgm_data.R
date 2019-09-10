@@ -13,8 +13,8 @@ combine_cgm_data_with_other_data <- function(cgm_data,
                                      other_data_name,
                                      id_name = "id",
                                      data_name = "data") {
-  # Input: Two lists of sub-lists, with each sublist containing the patient
-  # and associated cgm or other data.
+  # Input: Two lists of sub-lists created by load_file(), with each sublist 
+  # containing the patient and associated cgm or other data.
   #
   # Output: One list of sub-lists, each containing id, other data, cgm data for a single patient.
   
@@ -32,9 +32,7 @@ combine_cgm_data_with_other_data <- function(cgm_data,
                         .y = filtered_cgm_data,
                         .f = ~ append(.y, 
                                       create_list_with_name(other_data[[.x]][[data_name]],
-                                                            other_data_name)
-                                      )
-                        )
+                                                            other_data_name)))
 }
 
 ################################ A1C-SPECIFIC FILTERING ########################
@@ -50,6 +48,8 @@ identify_most_recent_a1c_with_cgm_data <- function(individual_patient_data,
   #
   # TODO: Have this select the most recent a1c date with sufficient cgm data,
   # not just any amount of CGM data
+  #
+  # TODO: Allow this to capture CGM data up to a week later than the a1c measurement
   
   bg_df <- individual_patient_data[[data_name]]
   a1c <- individual_patient_data[[a1c_name]]
