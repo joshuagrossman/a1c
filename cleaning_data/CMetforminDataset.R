@@ -1,6 +1,6 @@
 ################################## LIBRARIES ###################################
 
-source("lib/write_raw_data.R")
+source("lib/cleaning_data/clean.R")
 
 ################################## GLOBALS #####################################
 
@@ -29,15 +29,51 @@ cleaned_dfs$cgm <-
          datetime, 
          glucose = Glucose)
 
-################################# HBA1C DATA ###################################
+################################ HEIGHT / WEIGHT ##############################
 
-cleaned_dfs$a1c <- 
+# CRandomization_hw <-
+#   dfs$CRandomization %>% 
+#   select(id = PtID, 
+#          visit = NA,
+#          weight = Weight, 
+#          height = Height)
+
+CFollowUpVisit_hw <-
+  dfs$CFollowUpVisit %>% 
+  select(id = PtID,
+         visit = Visit,
+         weight = Weight,
+         height = Height)
+
+# CPostTreatmentVisit_hw <- 
+#   dfs$CPostTreatmentVisit %>% 
+#   select(id = PtID,
+#          visit = NA,
+#          height = Height,
+#          weight = Weight)
+
+CScreening_hw <- 
+  dfs$CScreening %>% 
+  # no Visit column, so manually entering this string
+  mutate(visit = "Screening") %>% 
+  select(id = PtID,
+         visit,
+         height = Height,
+         weight = Weight)
+
+hw_cleaned <-
+  bind_rows(CFollowUpVisit_hw, CScreening_hw)
+
+###################### HBA1C DATA W/ HEIGHT/WEIGHT ###########################
+
+CLabHbA1c_cleaned <- 
   dfs$CLabHbA1c %>% 
   mutate(date = convert_to_date(TestDaysFromEnroll,
                                 STUDY_START_DATE)) %>% 
   select(id = PtID, 
          date, 
-         a1c = HbA1c)
+         a1c = HbA1c,
+         visit = Visit)
 
 # Impossible to determine when these a1c measurements occurred, seems like they
 # are before the study start date
@@ -46,13 +82,11 @@ cleaned_dfs$a1c <-
 #   filter(ResultName == "HbA1c") %>% 
 #   select(id, a1c = Value)
 
-################################ STATIC MEASUREMENTS ###########################
+cleaned_dfs$a1c <- 
+  CLabHbA1c_cleaned %>% 
+  left_join(hw_cleaned, by = c("id", "visit"))
 
-CRandomization_cleaned <-
-  dfs$CRandomization %>% 
-  select(id = PtID, 
-         weight = Weight, 
-         height = Height)
+############################ OTHER MEASUREMENTS ################################
 
 CScreening_cleaned <-
   dfs$CScreening %>% 
@@ -84,12 +118,14 @@ cgm_name <-
   summarize(cgm_name = unique(cgm_name))
 
 cleaned_dfs$measurements <- 
-  full_join(CRandomization_cleaned, CScreening_cleaned, by = "id") %>% 
+  CScreening_cleaned %>%  
   full_join(CTrtGroupUnmasked_cleaned, by = "id") %>% 
   full_join(cgm_name, by = "id") %>% 
   mutate(datafile = str_c(.$id, ".csv"),
          study_start_date = STUDY_START_DATE,
          dataset = DATA_NAME)
+
+
 
 ################################ DATA CHECKS ###################################
 

@@ -1,6 +1,6 @@
 ################################## LIBRARIES ###################################
 
-source("lib/load.R")
+source("lib/cleaning_data/clean.R")
 
 ################################## GLOBALS #####################################
 
@@ -31,16 +31,31 @@ cleaned_dfs$cgm <-
          datetime, 
          glucose = Glucose)
 
-################################# HBA1C DATA ###################################
+################################# HEIGHT / WEIGHT ##############################
 
-FFinalVisit_cleaned <- 
-  dfs$FFinalVisit %>% 
-  mutate(a1c = as.double(HbA1c),
-         date = convert_to_date(TestDaysFromEnroll, 
-                                STUDY_START_DATE)) %>% 
-  select(id = PtID, 
-         a1c, 
-         date)
+FBaseline_hw <- 
+  dfs$FBaseline %>% 
+  transmute(id = PtID,
+            visit = "Baseline",
+            weight = if_else(WeightUnits == "lbs", 
+                             lbs_to_kg(Weight), 
+                             as.double(Weight)),
+            height = if_else(HeightUnits == "in", 
+                             inches_to_cm(Height), 
+                             as.double(Height)))
+
+
+########################### HBA1C DATA W/ HEIGHT/WEIGHT ########################
+
+# final visit a1c already contained in FSampleResults
+# FFinalVisit_cleaned <- 
+#   dfs$FFinalVisit %>% 
+#   mutate(a1c = as.double(HbA1c),
+#          date = convert_to_date(TestDaysFromEnroll, 
+#                                 STUDY_START_DATE)) %>% 
+#   select(id = PtID, 
+#          a1c, 
+#          date)
 
 FSampleResults_cleaned <-
   dfs$FSampleResults %>% 
@@ -50,18 +65,20 @@ FSampleResults_cleaned <-
                                 STUDY_START_DATE)) %>% 
   select(id = PtID, 
          a1c, 
-         date)
+         date,
+         visit = Visit) %>% 
+  left_join(FBaseline_hw, by = c("id", "visit"))
 
-cleaned_dfs$a1c <- bind_rows(FFinalVisit_cleaned, FSampleResults_cleaned)
+# cleaned_dfs$a1c <- bind_rows(FFinalVisit_cleaned, FSampleResults_cleaned)
+
+cleaned_dfs$a1c <- FSampleResults_cleaned
 
 ################################ STATIC MEASUREMENTS ###########################
 
 FBaseline_cleaned <- 
   dfs$FBaseline %>% 
   transmute(id = PtID, 
-            gender = Gender, 
-            weight = ifelse(WeightUnits == "lbs", lbs_to_kg(Weight), Weight),
-            height = ifelse(HeightUnits == "in", inches_to_cm(Height), Height))
+            gender = Gender)
 
 FPtRoster_cleaned <-
   dfs$FPtRoster %>% 

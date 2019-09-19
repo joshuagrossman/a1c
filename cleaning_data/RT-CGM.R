@@ -1,6 +1,6 @@
 ################################## LIBRARIES ###################################
 
-source("lib/load.R")
+source("lib/cleaning_data/clean.R")
 
 ################################## GLOBALS #####################################
 
@@ -28,13 +28,36 @@ cleaned_dfs$cgm <-
          datetime = DeviceDtTm,
          glucose = Glucose)
 
+################################# HEIGHT / WEIGHT ##############################
+
+tblAPtSummary_hw <-
+  dfs$tblAPtSummary %>% 
+  transmute(id = PtID,
+         # not clear when this height/weight was recorded, potentially randomization
+         visit = NA_character_,
+         height = Height, 
+         weight = Weight)
+
+# this df is missing from the data, but included in the study description
+# HScreening_hw <-
+#   dfs$HScreening %>% 
+#   transmute(id = PtID,
+#          visit = "Screening",
+#          height = Height,
+#          weight = Weight)
+
+# cleaned_hw <- bind_rows(tblAPtSummary_hw, HScreening_hw)
+
+
 ################################# HBA1C DATA ###################################
 
 cleaned_dfs$a1c <-
   dfs$tblALabHbA1c %>% 
   select(id = PtID, 
          date = LabHbA1cDt, 
-         a1c = LabA1cResult)
+         a1c = LabA1cResult,
+         visit = Visit) %>%
+  left_join(tblAPtSummary_hw, by = c("id", "visit"))
 
 ################################# INSULIN DATA #################################
 
@@ -53,9 +76,7 @@ cleaned_dfs$measurements <-
          gender = Gender, 
          age = AgeAsOfRandDt, 
          race = Race, 
-         ethnicity = Ethnicity, 
-         height = Height, 
-         weight = Weight) %>% 
+         ethnicity = Ethnicity) %>% 
   mutate(datafile = str_c(.$id, ".csv"),
          study_start_date = STUDY_START_DATE,
          dataset = DATA_NAME,
@@ -74,4 +95,4 @@ if (!only_unique_patients) {
 
 write_main_csvs(cleaned_dfs, CLEANED_DATA_PATH)
 
-split_cgm_into_patients(CLEANED_DATA_PATH)
+# split_cgm_into_patients(CLEANED_DATA_PATH)
