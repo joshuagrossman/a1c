@@ -126,6 +126,11 @@ calculate_minutes_per_record <- function(bg_df,
   
   datetimes <- pull(bg_df, datetime_name)
   
+  if (is_character(datetimes)) {
+    warning("Datetimes parsed as strings. Converting to datetime.")
+    datetimes <- as_datetime(datetimes)
+  }
+  
   n_rows <- length(datetimes)
   
   # select n sequential rows at a random start point
