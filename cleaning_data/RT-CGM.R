@@ -54,8 +54,8 @@ tblAPtSummary_hw <-
 cleaned_dfs$a1c <-
   dfs$tblALabHbA1c %>% 
   select(id = PtID, 
-         date = LabHbA1cDt, 
          a1c = LabA1cResult,
+         date = LabHbA1cDt,
          visit = Visit) %>%
   left_join(tblAPtSummary_hw, by = c("id", "visit"))
 

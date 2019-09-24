@@ -1,6 +1,6 @@
 ################################## LIBRARIES ###################################
 
-source("lib/load.R")
+source("lib/cleaning_data/clean.R")
 
 ################################## GLOBALS #####################################
 
@@ -31,6 +31,15 @@ cleaned_dfs$cgm <-
          datetime, 
          glucose = GlucoseValue)
 
+################################# HEIGHT / WEIGHT ##############################
+
+HScreening_hw <-
+  dfs$HScreening %>% 
+  transmute(id = PtID, 
+         visit = "Screening Visit",
+         weight = Weight, 
+         height = Height)
+
 ################################# HBA1C DATA ###################################
 
 HLocalHbA1c_cleaned <- 
@@ -40,7 +49,8 @@ HLocalHbA1c_cleaned <-
                                 STUDY_START_DATE)) %>% 
   select(id = PtID, 
          a1c, 
-         date)
+         date,
+         visit = Visit)
 
 Sample_cleaned <- 
   dfs$Sample %>% 
@@ -50,9 +60,12 @@ Sample_cleaned <-
                                 STUDY_START_DATE)) %>% 
   select(id = PtID, 
          a1c, 
-         date)
+         date, visit = Visit)
 
-cleaned_dfs$a1c <- bind_rows(HLocalHbA1c_cleaned, Sample_cleaned)
+cleaned_dfs$a1c <- 
+  bind_rows(HLocalHbA1c_cleaned, 
+            Sample_cleaned) %>% 
+  left_join(HScreening_hw, by = c("id", "visit"))
 
 ################################# INSULIN DATA #################################
 
@@ -75,9 +88,7 @@ HScreening_cleaned <-
   select(id = PtID, 
          gender = Gender, 
          ethnicity = Ethnicity, 
-         race = Race, 
-         weight = Weight, 
-         height = Height)
+         race = Race)
 
 cleaned_dfs$measurements <-
   full_join(HPtRoster_cleaned, HScreening_cleaned, by = "id") %>% 

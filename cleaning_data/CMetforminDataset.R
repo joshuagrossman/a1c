@@ -70,9 +70,9 @@ CLabHbA1c_cleaned <-
   dfs$CLabHbA1c %>% 
   mutate(date = convert_to_date(TestDaysFromEnroll,
                                 STUDY_START_DATE)) %>% 
-  select(id = PtID, 
-         date, 
+  select(id = PtID,
          a1c = HbA1c,
+         date,
          visit = Visit)
 
 # Impossible to determine when these a1c measurements occurred, seems like they

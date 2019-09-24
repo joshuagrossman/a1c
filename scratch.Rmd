@@ -61,10 +61,6 @@ output: html_notebook
 ```
 
 ```{r}
-
-```
-
-```{r}
 library(glmnet)
 library(caret)
 library(tidyverse)
@@ -82,9 +78,8 @@ library(gridExtra)
 ```{r}
 datasets <- c(
   "RT_CGM_Randomized_Clinical_Trial",
-  # "CMetforminDataset",
-  # ^ turns out CMetforminDataset does not have cgm measurements before a1c is measured.
-  # cgm is done for a week AFTER each a1c measurement during the study....
+  "CMetforminDataset",
+  "FLEX",
   "Protocol_F",
   "Protocol_H"
 )
@@ -109,23 +104,19 @@ create_feature_df <- function(dataset_name) {
                             NULL)
   
   combined <- combine_cgm_data_with_other_data(cgm, a1c, "a1c") %>% 
+                split_patients_by_valid_a1c() %>% 
                 combine_cgm_data_with_other_data(measurements, "measurements")
   
-  filtered <- map(combined, 
-                  filter_individual_cgm_by_a1c, 
-                  max_days = MAX_DAYS)
-  
-  filtered_with_features <- 
-    map(filtered, 
-        ~ append(.x, list(cgm_features = make_cgm_feature_df(.x, data_name = "filtered_cgm_data"))))
+  combined_with_features <- 
+    map(combined, 
+        ~ append(.x, list(cgm_features = make_cgm_feature_df(.x, data_name = "cgm_data"))))
   
   feature_df_as_list <- 
-    map(filtered_with_features, 
-        ~ c(id = .[["id"]],
+    map(combined_with_features, 
+        ~ c(id = str_c(.[["id"]], "_", .[["a1c_date"]]),
+            a1c_value = .[["a1c_value"]],
             .[["cgm_features"]], 
-            .[["measurements"]],
-            most_recent_a1c_value = .[["most_recent_a1c_value"]],
-            most_recent_a1c_date = .[["most_recent_a1c_date"]]))
+            .[["measurements"]]))
   
   reduce(feature_df_as_list, bind_rows)
 }
@@ -138,9 +129,9 @@ feature_df <- reduce(feature_df_as_list, bind_rows)
 ```{r}
 feature_df <- filter(feature_df, 
                      ! is.na(cgm_days) & 
-                     cgm_days > 6 &
-                     between(most_recent_a1c_value, 5.5, 11.5)) %>%
-                mutate(bmi = weight / (height / 100)^2,
+                     cgm_days >= 6 &
+                     between(a1c_value, 5.5, 11.5)) %>%
+                mutate(#bmi = weight / (height / 100)^2,
                        
                        race = ifelse(race == "Black/African American",
                                                  "Black",
@@ -158,11 +149,11 @@ feature_df <- filter(feature_df,
                                           ethnicity,
                                           NA))
 
-# get rid of massive 411 cm height outlier
-height_outlier_row <- (feature_df$datafile == "156.csv" & 
-                         feature_df$dataset == "Protocol_F")
-
-feature_df$height[height_outlier_row] <- NA
+# # get rid of massive 411 cm height outlier
+# height_outlier_row <- (feature_df$datafile == "156.csv" & 
+#                          feature_df$dataset == "Protocol_F")
+# 
+# feature_df$height[height_outlier_row] <- NA
 ```
 
 ```{r}
@@ -184,7 +175,9 @@ feature_df <- feature_df %>%
          -study_start_date, 
          -dataset,
          -cgm_name,
-         -most_recent_a1c_date) %>% 
+         # -height,
+         -metformin, 
+         -years_since_diag) %>% 
   
   # very few patients are hispanic (<20 out of >800), so removing bc near zero variance.
   select(-ethnicity) %>% 
@@ -201,7 +194,7 @@ colnames(feature_df)
 ea1c <- 3.38 + 0.02345 * mean_bg_full_day
 gmi <- 3.31 + 0.02392 * mean_bg_full_day
 
-outcome_a1c <- feature_df$most_recent_a1c_value
+outcome_a1c <- feature_df$a1c_value
 
 lm_df <- data.frame(mean_bg_full_day = mean_bg_full_day, 
                        outcome_a1c = outcome_a1c)
@@ -209,7 +202,7 @@ lm_df <- data.frame(mean_bg_full_day = mean_bg_full_day,
 
 ```{r}
 dummied <- 
-  dummyVars(most_recent_a1c_value ~ ., feature_df) %>% 
+  dummyVars(a1c_value ~ ., feature_df) %>% 
   predict(feature_df)
 ```
 
@@ -315,7 +308,7 @@ lm_lasso_fit <-
        high_sd_bg_daytime,
        high_cv_bg_daytime,
        age,
-       raceBlack,
+       raceBlack
        bmi) %>% 
   train(train_outcome,
         method = "lm")
@@ -325,8 +318,8 @@ lm_lasso_pred <- predict(lm_lasso_fit, test_df)
 ```
 
 ```{r}
-lasso2_fit <- train(train_df,
-                    train_outcome,
+lasso2_fit <- train(a1c ~ .*.,
+                    bind_cols(a1c = train_outcome, train_df),
                     method = "glmnet",
                     tuneGrid = data.frame(alpha = 1,
                                           lambda = lambdas),
@@ -334,6 +327,10 @@ lasso2_fit <- train(train_df,
 
 lasso2_pred <- predict(lasso2_fit, test_df)
 (lasso2_results <- postResample(lasso2_pred, test_outcome))
+```
+
+```{r}
+#coef(lasso2_fit$finalModel, lasso2_fit$bestTune$lambda)
 ```
 
 ```{r}
@@ -429,9 +426,9 @@ prediction_df <-
   mutate(ea1c = ea1c,
          gmi = gmi,
          outcome_a1c = outcome_a1c) %>% 
-  add_predictions(lasso_fit, var = "lasso_pred") %>% 
+  add_predictions(lasso_fit, var = "lasso2_pred") %>% 
   add_predictions(rf_fit, var = "rf_pred") %>% 
-  add_predictions(lasso_fit_no_race, var = "lasso_pred_no_race") %>% 
+  add_predictions(lasso_fit_no_race, var = "lasso2_pred_no_race") %>% 
   add_predictions(rf_fit_no_race, var = "rf_pred_no_race")
 
 # ggplot(prediction_df) +
@@ -445,11 +442,11 @@ prediction_df <-
 prediction_df %>% 
   ggplot() +
   geom_point(aes(x = gmi, y = outcome_a1c), color = "red", alpha = 0.5) +
-  geom_point(aes(x = lasso_pred, y = outcome_a1c), color = "blue", alpha = 0.5) +
+  geom_point(aes(x = rf_pred, y = outcome_a1c), color = "blue", alpha = 0.5) +
   theme_light() +
   xlab("Predicted") +
   ylab("Actual") +
-  ggtitle("Red = GMI, Blue = LASSO") +
+  ggtitle("Red = GMI, Blue = RF") +
   geom_abline() +
   ggsave("together.png")
 ```
@@ -518,7 +515,7 @@ ggplot(binned_a1c) +
                fill = "blue",
                alpha = 0.5,
                width = 0.2) +
-  # geom_jitter(aes(x = rf_pred_cut, 
+  # geom_jitter(aes(x = rf_pred_cut,
   #                group = rf_pred_cut,
   #                y = resid_rf),
   #            color = "black",

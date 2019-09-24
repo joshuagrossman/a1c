@@ -31,6 +31,42 @@ MIN_DATA_REQUIRED <- 0.7
 # data points required to calculate summary stats
 MIN_RECORDINGS_REQUIRED <- 10
 
+################################## CALCULATE CGM FEATURES ######################
+
+make_cgm_feature_df <- function(cgm_data_with_id, 
+                                id_name = "id", 
+                                data_name = "data") {
+  # Input: List containing CGM data for a particular patient and the 
+  # patient's id, as generate by load_file()
+  #
+  # Output: One-row dataframe containing summary features for the patient's CGM data.
+  
+  id <- as.character(cgm_data_with_id[[id_name]])
+  cgm_data <- cgm_data_with_id[[data_name]]
+  
+  if (! is_tibble(cgm_data)) {
+    warning("No cgm data provided. Returning NULL.")
+    return(NULL)
+  }
+  
+  if (nrow(cgm_data) < MIN_RECORDINGS_REQUIRED) {
+    warning(str_c("Less than ", MIN_RECORDINGS_REQUIRED, 
+                  " data points. Returning NULL."))
+    return(NULL)
+  }
+  
+  cgm_data <- arrange(cgm_data, datetime)
+  
+  sufficient_cgm_data <- filter_insufficient_data(cgm_data)
+  
+  if (is.null(sufficient_cgm_data)) {
+    # warning message supplied by `filter_insufficient_data`
+    return(NULL)
+  }
+  
+  calculate_all_bg_stats(sufficient_cgm_data)
+}
+
 ################## CGM FEATURE EXTRACTION PIPELINE #############################
 
 calculate_all_bg_stats <- function(bg_df) {
@@ -75,37 +111,6 @@ calculate_all_bg_stats <- function(bg_df) {
                        cv_in_range)))
 }
 
-################################## CALCULATE CGM FEATURES ######################
-
-make_cgm_feature_df <- function(cgm_data_with_id, 
-                                id_name = "id", 
-                                data_name = "data") {
-  # Input: List containing CGM data for a particular patient and the 
-  # patient's id, as generate by load_file()
-  #
-  # Output: One-row dataframe containing summary features for the patient's CGM data.
-  
-  id <- as.character(cgm_data_with_id[[id_name]])
-  cgm_data <- cgm_data_with_id[[data_name]]
-  
-  if (! is_tibble(cgm_data)) {
-    warning("No cgm data provided. Returning NULL.")
-    return(NULL)
-  }
-  
-  if (nrow(cgm_data) < MIN_RECORDINGS_REQUIRED) {
-    warning(str_c("Less than ", MIN_RECORDINGS_REQUIRED, 
-                  " data points. Returning NULL."))
-    return(NULL)
-  }
-  
-  cgm_data <- arrange(cgm_data, datetime)
-  
-  sufficient_cgm_data <- filter_insufficient_data(cgm_data)
-  
-  calculate_all_bg_stats(sufficient_cgm_data)
-}
-
 
 ############# FILTER TOO OLD, TOO RECENT, AND INSUFFICIENT DATA ################
 
@@ -132,6 +137,9 @@ calculate_minutes_per_record <- function(bg_df,
   }
   
   n_rows <- length(datetimes)
+  
+  # don't use NA datetimes to calculate time between records
+  datetimes <- datetimes[! is.na(datetimes)]
   
   # select n sequential rows at a random start point
   if (n_rows > n) {
@@ -182,8 +190,9 @@ filter_insufficient_data <- function(bg_df,
   minutes_per_record <- calculate_minutes_per_record(bg_df)
   
   if (! minutes_per_record %in% MINUTES_BETWEEN_RECORDS) {
-    print(minutes_per_record)
-    abort("CGM data not recorded in 5, 10, 15, or 20 minute intervals.")
+    warning(str_c("CGM data not recorded consistently in 5, 10, 15, or ",
+                  "20 minute intervals. Returning NULL."))
+    return(NULL)
   }
   
   cgm_records_per_hour <- 60 / minutes_per_record

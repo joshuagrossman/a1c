@@ -9,14 +9,14 @@ create_list_with_name <- function(x, x_name) {
 }
 
 combine_cgm_data_with_other_data <- function(cgm_data, 
-                                     other_data,
-                                     other_data_name,
-                                     id_name = "id",
-                                     data_name = "data") {
+                                             other_data,
+                                             other_data_name,
+                                             id_name = "id",
+                                             data_name = "data") {
   # Input: Two lists of sub-lists created by load_file(), with each sublist 
-  # containing the patient and associated cgm or other data.
+  # containing the patient id and associated data.
   #
-  # Output: One list of sub-lists, each containing id, other data, cgm data for a single patient.
+  # Output: One list of sub-lists, each containing patient id and all associated data.
   
   cgm_ids <- map_chr(cgm_data, ~ as.character(.[[id_name]]))
   other_ids <- map_chr(other_data, ~ as.character(.[[id_name]]))
@@ -33,46 +33,27 @@ combine_cgm_data_with_other_data <- function(cgm_data,
                         .f = ~ append(.y, 
                                       create_list_with_name(other_data[[.x]][[data_name]],
                                                             other_data_name)))
+  
+  combined_data
 }
 
-################################ A1C-SPECIFIC FILTERING ########################
+################################ MERGING A1C DATA #############################
 
-identify_most_recent_a1c_with_cgm_data <- function(individual_patient_data,
-                                                   data_name = "data",
-                                                   a1c_name = "a1c",
-                                                   date_name = "date",
-                                                   datetime_name = "datetime") {
+split_patients_by_valid_a1c <- function(individual_patient_data,
+                                        id_name = "id",
+                                        a1c_data_name = "a1c",
+                                        cgm_data_name = "data",
+                                        max_days = 30,
+                                        extra_days = 7) {
   
-  # Identifies the date of the most recent a1c that falls inside the date range 
-  # of cgm data
-  #
-  # TODO: Have this select the most recent a1c date with sufficient cgm data,
-  # not just any amount of CGM data
-  #
-  # TODO: Allow this to capture CGM data up to a week later than the a1c measurement
-  
-  bg_df <- individual_patient_data[[data_name]]
-  a1c <- individual_patient_data[[a1c_name]]
-  
-  max_cgm_date <- as_date(max(pull(bg_df, datetime_name), na.rm = T))
-  min_cgm_date <- as_date(min(pull(bg_df, datetime_name), na.rm = T))
-  
-  most_recent_a1c <- a1c %>%
-    filter(! is.na(a1c)) %>% 
-    filter(between(as_date(date), min_cgm_date, max_cgm_date)) %>% 
-    arrange(desc(date)) %>% 
-    slice(1)
-  
-  if (nrow(most_recent_a1c) == 0) {
-    return(c(individual_patient_data,
-                most_recent_a1c_value = NA, 
-                most_recent_a1c_date = NA))
-  }
-  
-  c(individual_patient_data, 
-    most_recent_a1c_value = pull(most_recent_a1c, a1c_name),
-    most_recent_a1c_date = as_date(pull(most_recent_a1c, date_name)))
-  
+  combined <- 
+    map(individual_patient_data, 
+        ~ extract_valid_a1cs_and_associated_cgm_data(.[[a1c_data_name]],
+                                                   .[[cgm_data_name]],
+                                                   .[[id_name]],
+                                                   max_days,
+                                                   extra_days)) %>% 
+    flatten()
 }
 
 filter_cgm_by_date <- function(bg_df, end_date, max_days) {
@@ -86,22 +67,57 @@ filter_cgm_by_date <- function(bg_df, end_date, max_days) {
                    end_date_as_date - days(1)))
 }
 
-filter_individual_cgm_by_a1c <- function(individual_patient_data, max_days) {
-  # Removes CGM data that falls after the most recent a1c date or before
-  # `max_days` before the most recent a1c date
+extract_valid_a1cs_and_associated_cgm_data <- function(a1c_df, 
+                                                       bg_df,
+                                                       id,
+                                                       max_days,
+                                                       extra_days = 7) {
   
-  recent_a1c_identifed <- identify_most_recent_a1c_with_cgm_data(individual_patient_data)
-  
-  most_recent_a1c_date <- recent_a1c_identifed$most_recent_a1c_date
-    
-  if (is.na(most_recent_a1c_date)) {
-    return(c(recent_a1c_identifed, filtered_cgm_data = NA))
+  if (all(is.na(a1c_df))) {
+    warning("No a1c data provided.")
+    return(list(list(id = id,
+                     a1c_value = NA,
+                     a1c_date = NA,
+                     cgm_data = bg_df)))
   }
   
-  recent_a1c_identifed$filtered_cgm_data <- 
-    filter_cgm_by_date(recent_a1c_identifed$data, 
-                       most_recent_a1c_date,
-                       max_days)
-  
-  recent_a1c_identifed
+  pmap(a1c_df, ~ list(id = id,
+                      a1c_value = ..1,
+                      a1c_date = ..2,
+                      cgm_data = filter_cgm_by_date(bg_df,
+                                                    ..2 + days(extra_days),
+                                                    max_days)))
 }
+
+
+################################ DEPRECATED ####################################
+
+# identify_a1cs_with_cgm_data <- function(a1c_df,
+#                                         bg_df,
+#                                         a1c_name = "a1c",
+#                                         date_name = "date",
+#                                         datetime_name = "datetime") {
+#   
+#   # Identifies the lab-measured a1cs that occurred at the same time BG was 
+#   # measured using CGM
+#   
+#   cgm_datetimes <- pull(bg_df, datetime_name)
+#     
+#   max_cgm_date <- as_date(max(cgm_datetimes, na.rm = T))
+#   min_cgm_date <- as_date(min(cgm_datetimes, na.rm = T))
+#   
+#   valid_a1cs <- a1c_df %>%
+#     filter(! is.na(a1c)) %>% 
+#     filter(between(as_date(date), min_cgm_date, max_cgm_date)) %>% 
+#     arrange(desc(date))
+#   
+#   if (nrow(valid_a1cs) == 0) {
+#     return(NA)
+#   }
+#   
+#   tibble(
+#     a1c_value = pull(valid_a1cs, a1c_name),
+#     a1c_date = as_date(pull(valid_a1cs, date_name))
+#   )
+#   
+# }

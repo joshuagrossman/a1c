@@ -8,3 +8,5 @@ create_cgm_features <- function(cgm_df) {
   # this ensures that a single patient cgm file will still return a df
   reduce(., bind_rows, .init = sample_n(bind_rows(.[[1]]), 0))
 }
+
+

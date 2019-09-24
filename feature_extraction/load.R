@@ -40,7 +40,7 @@ load_file <- function(filepath, required_headers) {
   df <- read_csv(filepath)
   
   if (! is.null(required_headers)) {
-    if (! all(colnames(df) %in% required_headers)) {
+    if (! all(required_headers %in% colnames(df))) {
       abort(str_c("Datafile at `filepath` must contain ", required_headers))
     }
   }

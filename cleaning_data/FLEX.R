@@ -45,8 +45,8 @@ cleaned_hw <-
 cleaned_dfs$a1c <-
   dfs$raw_a1c %>% 
   select(id = newID,
-         date = visit_date,
-         a1c = HbA1c_pcnt) %>% 
+         a1c = HbA1c_pcnt,
+         date = visit_date) %>% 
   left_join(cleaned_hw, by = c("id", "date")) %>% 
   mutate(date = as_date(as.numeric(date), origin = "1960-01-01"))
 
