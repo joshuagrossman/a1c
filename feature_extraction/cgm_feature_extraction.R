@@ -34,14 +34,14 @@ MIN_RECORDINGS_REQUIRED <- 10
 ################################## CALCULATE CGM FEATURES ######################
 
 make_cgm_feature_df <- function(cgm_data_with_id, 
-                                id_name = "id", 
+                                # id_name = "id", 
                                 data_name = "data") {
   # Input: List containing CGM data for a particular patient and the 
   # patient's id, as generate by load_file()
   #
   # Output: One-row dataframe containing summary features for the patient's CGM data.
   
-  id <- as.character(cgm_data_with_id[[id_name]])
+  #id <- as.character(cgm_data_with_id[[id_name]])
   cgm_data <- cgm_data_with_id[[data_name]]
   
   if (! is_tibble(cgm_data)) {
@@ -132,8 +132,7 @@ calculate_minutes_per_record <- function(bg_df,
   datetimes <- pull(bg_df, datetime_name)
   
   if (is_character(datetimes)) {
-    warning("Datetimes parsed as strings. Converting to datetime.")
-    datetimes <- as_datetime(datetimes)
+    abort("Datetimes parsed as strings. Convert to datetime and re-run.")
   }
   
   n_rows <- length(datetimes)
