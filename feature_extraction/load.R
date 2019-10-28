@@ -28,9 +28,9 @@ make_id_list <- function(df) {
 
 load_file <- function(filepath, required_headers) {
   # Input: Filepath to a CSV containing data for more than one patient. The
-  # CSV must contain required_headers as columns.
+  # CSV must contain `required_headers` as columns.
   #
-  # Output: A list of lists, with each list containing the patient_id and all
+  # Output: A list of lists, with each list containing the patient id and all
   # associated data as a df.
   
   if (path_ext(filepath) != "csv") {

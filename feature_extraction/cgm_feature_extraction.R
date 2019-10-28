@@ -1,4 +1,4 @@
-source("lib/feature_extraction/load.R")
+source("feature_extraction/load.R")
 
 ################################## GLOBALS #####################################
 
@@ -33,15 +33,13 @@ MIN_RECORDINGS_REQUIRED <- 10
 
 ################################## CALCULATE CGM FEATURES ######################
 
-make_cgm_feature_df <- function(cgm_data_with_id, 
-                                # id_name = "id", 
+make_cgm_feature_df <- function(cgm_data_with_id,
                                 data_name = "data") {
   # Input: List containing CGM data for a particular patient and the 
   # patient's id, as generate by load_file()
   #
   # Output: One-row dataframe containing summary features for the patient's CGM data.
   
-  #id <- as.character(cgm_data_with_id[[id_name]])
   cgm_data <- cgm_data_with_id[[data_name]]
   
   if (! is_tibble(cgm_data)) {
@@ -60,7 +58,7 @@ make_cgm_feature_df <- function(cgm_data_with_id,
   sufficient_cgm_data <- filter_insufficient_data(cgm_data)
   
   if (is.null(sufficient_cgm_data)) {
-    # warning message supplied by `filter_insufficient_data`
+    # warning message is supplied by `filter_insufficient_data` function
     return(NULL)
   }
   
@@ -87,6 +85,7 @@ calculate_all_bg_stats <- function(bg_df) {
   percent_in_range <- map(RANGE_NAMES, 
                           ~ calculate_percent_in_given_range(bg_df, .))
   
+  # only need summary stats at the main ranges, not enough data at very low etc.
   mean_in_range <- map(CORE_RANGE_NAMES, 
                        ~ calculate_stat_in_given_range(bg_df, 
                                                        ., 

@@ -1,4 +1,4 @@
-source("lib/feature_extraction/load.R")
+source("feature_extraction/load.R")
 
 ################# COMBINING OTHER PATIENT DATA WITH CGM DATA ###################
 
@@ -80,6 +80,8 @@ extract_valid_a1cs_and_associated_cgm_data <- function(a1c_df,
                      a1c_date = NA,
                      cgm_data = bg_df)))
   }
+  
+  # TODO: Make this more robust to different orders of columns in a1c_df
   
   pmap(a1c_df, ~ list(id = id,
                       a1c_value = ..1,
