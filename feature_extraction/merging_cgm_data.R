@@ -1,4 +1,6 @@
-source("feature_extraction/load.R")
+# Merges CGM data with other data (i.e., a1c and measurement data).
+
+source("lib/feature_extraction/load.R")
 
 ################# COMBINING OTHER PATIENT DATA WITH CGM DATA ###################
 
@@ -28,11 +30,11 @@ combine_cgm_data_with_other_data <- function(cgm_data,
   
   matching_id_indices <- matching_id_indices[! is.na(matching_id_indices)]
   
-  combined_data <- map2(.x = matching_id_indices, 
-                        .y = filtered_cgm_data,
-                        .f = ~ append(.y, 
-                                      create_list_with_name(other_data[[.x]][[data_name]],
-                                                            other_data_name)))
+  combined_data <- 
+    map2(.x = matching_id_indices, 
+         .y = filtered_cgm_data,
+         .f = ~ append(.y, create_list_with_name(other_data[[.x]][[data_name]],
+                                                 other_data_name)))
   
   combined_data
 }
@@ -49,10 +51,10 @@ split_patients_by_valid_a1c <- function(individual_patient_data,
   combined <- 
     map(individual_patient_data, 
         ~ extract_valid_a1cs_and_associated_cgm_data(.[[a1c_data_name]],
-                                                   .[[cgm_data_name]],
-                                                   .[[id_name]],
-                                                   max_days,
-                                                   extra_days)) %>% 
+                                                     .[[cgm_data_name]],
+                                                     .[[id_name]],
+                                                     max_days,
+                                                     extra_days)) %>% 
     flatten()
 }
 

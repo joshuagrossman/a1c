@@ -1,94 +1,358 @@
 # Analyzes cgm, a1c, and measurement data.
 
-library(glmnet)
+source("lib/analysis/helpers.R")
+
 library(caret)
-library(tidyverse)
+
+library(glmnet)
 library(RANN)
 library(elasticnet)
-library(modelr)
+#library(modelr)
 library(randomForest)
-library(gbm)
+#library(gbm)
 library(furrr)
-library(fs)
-library(rlang)
-library(gridExtra)
+#library(fs)
+#library(rlang)
+#library(gridExtra)
+library(e1071)
+
+library(doParallel)
+cl <- makePSOCKcluster(availableCores() %/% 2 + 1)
+registerDoParallel(cl)
 
 theme_set(theme_bw())
 
 set.seed(1)
 
+TRAIN_FRAC <- 0.8
+
 # Each row is 1 a1c measurement across the 5 datasets. Potentially multiple a1c
 # measurements for each patient.
 data <- read_csv("data/features.csv")
 
-# Data contains 5,678 a1c measurements.
-nrow(data)
+cleaned_df <- load_and_filter(data)
 
-# Many a1c measurements appear to have less than a week of associated cgm data.
-# Studies desire at least a week of CGM data as a lead-in or follow-up to an a1c
-# measurement, typically.
-table(data$cgm_days)
+# <10 missing CGM statistics, using simple median imputation
+# Missing ages were cast as mean(age) in `load_and_filter`, and will be 
+# accounted for later on using interaction.
+cleaned_df <- preProcess(cleaned_df, method = "medianImpute") %>%
+  predict(cleaned_df) %>% 
+  as.data.frame()
 
-# Sparse data below rounded a1c of 6 mg/dL and above 11 mg/dL. 
-# >5.7% a1c indicates prediabetes. >6.5% indicates diabetes.
-table(round(data$a1c_value))
+# Generate train and test data
+# Don't want the same patient to exist in the train and test data even though
+# multiple outcomes per patient.
+training_ids <- 
+  cleaned_df %>% 
+  select(id) %>% 
+  group_by(id) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  sample_frac(TRAIN_FRAC)
 
-# Arbitrarily choosing 5 days as minimum amount of CGM data required allows
-# us to capture additional ~1300 a1c measurements.
-# Use 5.5% as a minimum and 11.5% as a maximum to allow clean bucketing into
-# rounded a1cs.
-feature_df <- data %>% 
-  filter(! is.na(cgm_days), 
-         cgm_days >= 5, 
-         between(a1c_value, 5.5, 11.5)) 
+training <-
+  cleaned_df %>%
+  rowid_to_column("index") %>% 
+  right_join(training_ids, by = "id") %>% 
+  pull("index")
 
-# Reduced to 4,415 a1c measurements.
-nrow(feature_df)
-  
-# In Protocol_H study, there are sometimes multiple HbA1c recordings on the same
-# day. This was likely to calibrate the a1c measurement. Taking a random one
-# from each day where there are multiple recordings.
-feature_df <- feature_df %>% 
-  group_by(id, a1c_date) %>% 
-  sample_n(1) %>% 
-  ungroup()
+train_df <- cleaned_df[training, ]
+test_df <- cleaned_df[-training, ]
 
-# Reduced to 3,780 a1c measurements.
-nrow(feature_df)
+# # Check that there are no matching IDs.
+# nrow(cleaned_df)
+# nrow(train_df) + nrow(test_df)
+# nrow(inner_join(train_df, test_df, by = "id"))
 
-# CMetformin and FLEX studies were conducted on individuals with poor diabetes
-# control, so it makes sense that mean BGs are higher for those studies.
-# Protocol_F falls somewhere in the middle.
-feature_df %>% 
-  group_by(id, dataset) %>% 
-  summarize(mean_bg = mean(mean_bg_full_day, na.rm = T)) %>% 
-  ggplot(aes(x = mean_bg, color = dataset)) +
-  geom_density()
+# write_csv(train_df, "data/train.csv")
+# write_csv(test_df, "data/test.csv")
 
-# CMetformin and FLEX studies were conducted on individuals with poor diabetes
-# control, so it makes sense that mean SD BGs are higher for those studies.
-# Again, Protocol_F falls somewhere in the middle.
-feature_df %>% 
-  group_by(id, dataset) %>% 
-  summarize(mean_sd_bg = mean(sd_bg_full_day, na.rm = T)) %>% 
-  ggplot(aes(x = mean_sd_bg, color = dataset)) +
-  geom_density()
+train_df <- read_csv("data/train.csv")
+test_df <- read_csv("data/test.csv")
 
-# CMetformin is the smallest study by far. Good to keep in mind for 
-# cross-dataset validation later on.
-feature_df %>% 
-  group_by(dataset) %>% 
-  summarize(n = n()) %>% 
-  ggplot(aes(x = dataset, y = n)) +
-  geom_col() + 
-  coord_flip()
-  
-  mutate(race = ifelse(race == "Black/African American",
-                       "Black",
-                       race),
-         ethnicity = ifelse(ethnicity == "Non-Hispanic",
-                            "Not Hispanic or Latino",
-                            ethnicity)
-  ) %>% 
-  ungroup()
+# Baseline models, RMSE = TBD, M01 = TBD
+gmi <- 3.31 + 0.02392 * train_df$mean_bg_full_day
+gmi_healthy <- gmi < 7.5
 
+outcome_a1c <- train_df$a1c_value
+gmi_rmse <- sqrt(mean((outcome_a1c - gmi)^2))
+
+healthy_a1c <- train_df$healthy_a1c
+gmi_accuracy <- mean(as.integer(healthy_a1c) == gmi_healthy)
+
+# Model set-up
+
+train_df$healthy_a1c <- factor(train_df$healthy_a1c)
+
+covars <- c("mean_bg_full_day", "sd_bg_full_day", 
+            "cv_bg_full_day", "percent_very_low_full_day", 
+            "percent_low_full_day", "percent_in_target_range_full_day", 
+            "percent_in_conservative_target_range_full_day", 
+            "percent_high_full_day", "percent_very_high_full_day", 
+            "in_target_range_mean_bg_full_day", "high_mean_bg_full_day", 
+            "in_target_range_sd_bg_full_day", "high_sd_bg_full_day", 
+            "in_target_range_cv_bg_full_day", "high_cv_bg_full_day", 
+            "male", "log(age):has_age", "I(log(age)^2):has_age",
+            "black", "hispanic")
+
+make_formula <- function(outcome, covars) {
+  as.formula(paste0(outcome, " ~ 1 + ", paste(covars, collapse = " + ")))
+}
+
+set_up_model <- function(outcome_name, covars) {
+  dummied <- dummyVars(make_formula(outcome_name, covars), train_df,
+                       fullRank = TRUE) %>%
+    predict(train_df)
+
+  preProcess(dummied, method = "medianImpute") %>%
+    predict(dummied) %>%
+    as.data.frame()
+}
+
+pre_processed_regression <- set_up_model("a1c_value", covars)
+pre_processed_classification <- set_up_model("healthy_a1c", covars)
+
+# Ensure that patients are not in both train and validation sets during CV.
+fit_control <- trainControl(method = "repeatedcv",
+                            index = groupKFold(train_df$id, 5),
+                            verboseIter = FALSE,
+                            allowParallel = TRUE)
+
+basic_lm_fit <- train(a1c_value ~ 1 + mean_bg_full_day,
+                      train_df,
+                      method = "lm",
+                      trControl = fit_control)
+
+race_lm_fit <- train(a1c_value ~ 1 + mean_bg_full_day + black,
+                     train_df,
+                     method = "lm",
+                     trControl = fit_control)
+
+lambdas <- 10 ^ seq(-3, 1, length = 100)
+
+lasso_fit <- train(pre_processed_regression,
+                   outcome_a1c,
+                   method = "glmnet",
+                   tuneGrid = data.frame(alpha = 1,
+                                         lambda = lambdas),
+                   trControl = fit_control)
+plot(lasso_fit, xTrans = log) 
+
+coef(lasso_fit$finalModel, lasso_fit$bestTune$lambda)
+
+race_ethnicity_lm_fit <- 
+  train(a1c_value ~ 1 + mean_bg_full_day + black + hispanic,
+        train_df,
+        method = "lm",
+        trControl = fit_control)
+
+race_sd_lm_fit <- 
+  train(a1c_value ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
+        train_df,
+        method = "lm",
+        trControl = fit_control)
+
+lasso2_fit <- train(a1c_value ~ .*.,
+                    bind_cols(a1c_value = outcome_a1c, pre_processed_regression),
+                    method = "glmnet",
+                    tuneGrid = data.frame(alpha = 1,
+                                          lambda = lambdas),
+                    trControl = fit_control)
+plot(lasso2_fit, xTrans = log) 
+
+rf_fit <- train(pre_processed_regression,
+                outcome_a1c,
+                method = "rf",
+                tuneGrid = expand.grid(.mtry=c(1:15)),
+                trControl = fit_control)
+plot(rf_fit)
+
+extract_cv_rmse <- function(fit) {
+  mean(fit$resample$RMSE)
+}
+
+# LASSO performs just as well as LASSO^2 and RF. 
+# LM w/ race is pretty good though, and more "interpretable".
+# LM w/ race and SD is also interpretable, and gets close to LASSO.
+list(gmi_rmse = gmi_rmse) %>% 
+  append(
+    map(list(basic_lm_cv_rmse = basic_lm_fit, 
+             race_lm_cv_rmse = race_lm_fit,
+             race_ethnicity_lm_cv_rmse = race_ethnicity_lm_fit,
+             race_sd_lm_cv_rmse = race_sd_lm_fit,
+             lasso_cv_rmse = lasso_fit,
+             lasso2_cv_rmse = lasso2_fit,
+             rf_cv_rmse = rf_fit),
+             extract_cv_rmse))
+
+train_df <- mutate(train_df, 
+                   a1c_resid = a1c_value - predict(race_sd_lm_fit, train_df))
+
+### Classification
+
+basic_glm_fit <- train(healthy_a1c ~ 1 + mean_bg_full_day,
+                      train_df,
+                      method = "glm",
+                      family = binomial(),
+                      trControl = fit_control)
+
+race_glm_fit <- train(healthy_a1c ~ 1 + mean_bg_full_day + black,
+                     train_df,
+                     method = "glm",
+                     family = binomial(),
+                     trControl = fit_control)
+
+lambdas <- 10 ^ seq(-3, 1, length = 100)
+
+class_lasso_fit <- train(pre_processed_classification,
+                   factor(healthy_a1c),
+                   method = "glmnet",
+                   family = "binomial",
+                   tuneGrid = data.frame(alpha = 1,
+                                         lambda = lambdas),
+                   trControl = fit_control)
+plot(class_lasso_fit, xTrans = log) 
+
+coef(class_lasso_fit$finalModel, class_lasso_fit$bestTune$lambda)
+
+race_ethnicity_glm_fit <- 
+  train(healthy_a1c ~ 1 + mean_bg_full_day + black + hispanic,
+        train_df,
+        method = "glm",
+        family = binomial(),
+        trControl = fit_control)
+
+race_sd_glm_fit <- 
+  train(healthy_a1c ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
+        train_df,
+        method = "glm",
+        trControl = fit_control)
+
+class_lasso2_fit <- train(healthy_a1c ~ .*.,
+                    bind_cols(healthy_a1c = factor(healthy_a1c), pre_processed_classification),
+                    method = "glmnet",
+                    family = "binomial",
+                    tuneGrid = data.frame(alpha = 1,
+                                          lambda = lambdas),
+                    trControl = fit_control)
+plot(class_lasso2_fit, xTrans = log) 
+
+class_rf_fit <- train(pre_processed_regression,
+                factor(healthy_a1c),
+                method = "rf",
+                famiily = "binomial",
+                tuneGrid = expand.grid(.mtry=c(1:15)),
+                trControl = fit_control)
+plot(class_rf_fit)
+
+extract_cv_accuracy <- function(fit) {
+  mean(fit$resample$Accuracy)
+}
+
+# Nothing is *that* better than GMI for classification purposes.
+# Again, though, a linear model with race/mean BG/sd BG works just as well
+# as the more complicated models.
+list(gmi_acc = gmi_accuracy) %>% 
+  append(
+    map(list(basic_glm_cv_acc = basic_glm_fit, 
+             race_glm_cv_acc = race_glm_fit,
+             race_ethnicity_glm_cv_acc = race_ethnicity_glm_fit,
+             race_sd_glm_cv_acc = race_sd_glm_fit,
+             class_lasso_cv_acc = class_lasso_fit,
+             class_lasso2_cv_acc = class_lasso2_fit,
+             class_rf_cv_acc = class_rf_fit),
+        extract_cv_accuracy))
+
+train_df <- mutate(train_df, 
+                   healthy_resid = as.integer(healthy_a1c == predict(race_sd_glm_fit, train_df)))
+
+### Work the prediction error back in
+
+train_df <- extract_last_a1c(train_df)
+
+# spike of people with at least 69 days between a1c measurements, less than
+# that could skew results a lot. Typically a1c measured every 3 months,
+# red blood cells turn over every 2-3 months, so this is a reasonabe timeframe
+short_train_df <- train_df %>% 
+  filter(between(days_since_last_a1c, 69, 400),
+         ! is.na(last_a1c_value))
+
+# Ensure that patients are not in both train and validation sets during CV.
+short_fit_control <- trainControl(method = "repeatedcv",
+                                  index = groupKFold(short_train_df$id, 5),
+                                  verboseIter = FALSE,
+                                  allowParallel = TRUE)
+
+# Back to regression
+
+short_gmi <- 3.31 + 0.02392 * short_train_df$mean_bg_full_day
+short_carryover_a1c <- short_train_df$last_a1c_value
+short_outcome_a1c <- short_train_df$a1c_value
+
+short_gmi_rmse <- sqrt(mean((short_outcome_a1c - short_gmi)^2))
+carryover_rmse <- sqrt(mean((short_outcome_a1c - short_carryover_a1c)^2))
+
+former_fit <-
+  train(a1c_value ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
+        short_train_df,
+        method = "lm",
+        trControl = short_fit_control)
+
+last_a1c_former_fit <- 
+  train(a1c_value ~ 1 + last_a1c_value + mean_bg_full_day + black + sd_bg_full_day,
+        short_train_df,
+        method = "lm",
+        trControl = short_fit_control)
+
+resid_last_a1c_former_fit <- 
+  train(a1c_value ~ 1 + last_a1c_value + mean_bg_full_day + black + sd_bg_full_day + last_a1c_resid,
+        short_train_df,
+        method = "lm",
+        trControl = short_fit_control)
+
+list(short_gmi_rmse = short_gmi_rmse,
+     carryover_rmse = carryover_rmse) %>% 
+  append(
+    map(list(former_cv_rmse = former_fit, 
+             last_a1c_former_cv_rmse = last_a1c_former_fit,
+             resid_last_a1c_former_cv_rmse = resid_last_a1c_former_fit),
+        extract_cv_rmse))
+
+
+### Back to classification
+
+short_gmi_healthy <- factor(as.integer(short_gmi < 7.5))
+short_carryover_healthy <- factor(as.integer(short_carryover_a1c < 7.5))
+short_healthy_a1c <- short_train_df$healthy_a1c
+
+short_gmi_acc <- mean(short_healthy_a1c == short_gmi_healthy)
+carryover_acc <- mean(short_healthy_a1c == short_carryover_healthy)
+
+class_former_fit <-
+  train(healthy_a1c ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
+        short_train_df,
+        method = "glm",
+        family = binomial(),
+        trControl = short_fit_control)
+
+last_a1c_class_former_fit <- 
+  train(healthy_a1c ~ 1 + last_healthy_a1c + mean_bg_full_day + black + sd_bg_full_day,
+        short_train_df,
+        method = "glm",
+        family = binomial(),
+        trControl = short_fit_control)
+
+resid_last_a1c_class_former_fit <- 
+  train(healthy_a1c ~ 1 + last_healthy_a1c + mean_bg_full_day + black + sd_bg_full_day + last_healthy_resid,
+        short_train_df,
+        method = "glm",
+        family = binomial(),
+        trControl = short_fit_control)
+
+list(short_gmi_acc = short_gmi_acc,
+     carryover_acc = carryover_acc) %>% 
+  append(
+    map(list(former_cv_acc = class_former_fit, 
+             last_a1c_former_cv_acc = last_a1c_class_former_fit,
+             resid_last_a1c_former_cv_acc = resid_last_a1c_class_former_fit),
+        extract_cv_accuracy))

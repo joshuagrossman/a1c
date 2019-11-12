@@ -33,7 +33,7 @@ cleaned_dfs$cgm <-
 tblAPtSummary_hw <-
   dfs$tblAPtSummary %>% 
   transmute(id = PtID,
-         # not clear when this height/weight was recorded, potentially randomization
+         # not clear when this height/weight was recorded, potentially at randomization
          visit = NA_character_,
          height = Height, 
          weight = Weight)

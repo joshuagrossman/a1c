@@ -1,8 +1,13 @@
-source("feature_extraction/load.R")
+# Extracts features from CGM data.
+
+source("lib/feature_extraction/load.R")
 
 ################################## GLOBALS #####################################
 
 MINUTES_BETWEEN_RECORDS <- c(5, 10, 15, 20)
+
+# Standards based on Danne et al., 2017 (International Consensus on Use of
+# Continuous Glucose Monitoring)
 
 DAY_START <- 6
 # DAY_END assumed as midnight.
@@ -26,6 +31,7 @@ RANGE_NAMES <- c("very_low",
 CORE_RANGE_NAMES <- c("in_target_range", 
                       "high")
 
+# minimum fraction of possible readings
 MIN_DATA_REQUIRED <- 0.7
 
 # data points required to calculate summary stats
@@ -35,10 +41,11 @@ MIN_RECORDINGS_REQUIRED <- 10
 
 make_cgm_feature_df <- function(cgm_data_with_id,
                                 data_name = "data") {
-  # Input: List containing CGM data for a particular patient and the 
-  # patient's id, as generate by load_file()
+  # Input: List containing CGM $data for a particular patient and the patient's
+  # $id, as generate by `load_file()`
   #
-  # Output: One-row dataframe containing summary features for the patient's CGM data.
+  # Output: One-row dataframe containing summary features for the patient's CGM
+  # data.
   
   cgm_data <- cgm_data_with_id[[data_name]]
   

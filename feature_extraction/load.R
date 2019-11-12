@@ -18,7 +18,7 @@ A1C_HEADERS <- c("id", "a1c", "date")
 ################################## LOAD DATA ###################################
 
 make_id_list <- function(df) {
-  # Input: Data with an `id` column
+  # Input: Dataframe with an `id` column
   #
   # Output: A list of sublists, each containing an id and its associated data
   
@@ -28,7 +28,7 @@ make_id_list <- function(df) {
 
 load_file <- function(filepath, required_headers) {
   # Input: Filepath to a CSV containing data for more than one patient. The
-  # CSV must contain `required_headers` as columns.
+  # CSV must contain `required_headers` as columns, but may have other cols.
   #
   # Output: A list of lists, with each list containing the patient id and all
   # associated data as a df.

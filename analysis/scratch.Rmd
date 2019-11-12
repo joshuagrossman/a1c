@@ -143,67 +143,67 @@ library(gridExtra)
 
 ```{r}
 set.seed(1)
-feature_df <- read_csv("data/features.csv") %>% 
-  
-  filter(! is.na(cgm_days),
-         cgm_days >= 6,
-         between(a1c_value, 5.5, 11.5)) %>% 
-  
-  # In protocol H, there are multiple HbA1c recordings on the same day
-  # This was likely to calibrate. Taking the "first" one from each day.
-  group_by(id, a1c_date) %>% 
-  sample_n(1) %>% 
-  ungroup() %>% 
-  
-  group_by(id) %>% 
-  
-  mutate(a1c_count = n(),
-         race = ifelse(race == "Black/African American",
-                                                 "Black",
-                                                 race),
-         ethnicity = ifelse(ethnicity == "Non-Hispanic",
-                                                 "Not Hispanic or Latino",
-                                                 ethnicity)
-         ) %>% 
-  ungroup()
+# feature_df <- read_csv("data/features.csv") %>% 
+#   
+#   filter(! is.na(cgm_days),
+#          cgm_days >= 6,
+#          between(a1c_value, 5.5, 11.5)) %>% 
+#   
+#   # In protocol H, there are multiple HbA1c recordings on the same day
+#   # This was likely to calibrate. Taking the "first" one from each day.
+#   group_by(id, a1c_date) %>% 
+#   sample_n(1) %>% 
+#   ungroup() %>% 
+#   
+#   group_by(id) %>% 
+#   
+#   mutate(a1c_count = n(),
+#          race = ifelse(race == "Black/African American",
+#                                                  "Black",
+#                                                  race),
+#          ethnicity = ifelse(ethnicity == "Non-Hispanic",
+#                                                  "Not Hispanic or Latino",
+#                                                  ethnicity)
+#          ) %>% 
+#   ungroup()
 ```
 
 ```{r}
-print(paste("Number of patients:", length(unique(feature_df$id))))
-print(paste("Number of HbA1c records:", length(feature_df$id)))
-
-mean_sd_min_max <- function(name) {
-  v <- pull(feature_df, name)
-  print(paste("Mean/SD/Min/Max ", name, na_mean(v), na_sd(v), min(v, na.rm = T), max(v, na.rm = T)))
-}
-mean_sd_min_max("cgm_days")
-mean_sd_min_max("a1c_count")
-mean_sd_min_max("a1c_value")
-mean_sd_min_max("age")
-
-patients <- feature_df %>% 
-  group_by(id) %>% 
-  slice(1)
-
-table(patients$race) / nrow(patients)
-table(patients$ethnicity) / nrow(patients)
-table(patients$gender) / nrow(patients)
+# print(paste("Number of patients:", length(unique(feature_df$id))))
+# print(paste("Number of HbA1c records:", length(feature_df$id)))
+# 
+# mean_sd_min_max <- function(name) {
+#   v <- pull(feature_df, name)
+#   print(paste("Mean/SD/Min/Max ", name, na_mean(v), na_sd(v), min(v, na.rm = T), max(v, na.rm = T)))
+# }
+# mean_sd_min_max("cgm_days")
+# mean_sd_min_max("a1c_count")
+# mean_sd_min_max("a1c_value")
+# mean_sd_min_max("age")
+# 
+# patients <- feature_df %>% 
+#   group_by(id) %>% 
+#   slice(1)
+# 
+# table(patients$race) / nrow(patients)
+# table(patients$ethnicity) / nrow(patients)
+# table(patients$gender) / nrow(patients)
 ```
 
 
 ```{r}
-feature_df <- feature_df %>% mutate(#bmi = weight / (height / 100)^2,
-                       
-                       
-                       race = ifelse(race %in% c("Black", "White"), race, NA),
-                       
-                       ethnicity = ifelse(ethnicity == "Unknown/not reported",
-                                                 NA,
-                                                 ethnicity),
-                       ethnicity = ifelse(ethnicity %in% c("Hispanic or Latino",
-                                                           "Not Hispanic or Latino"),
-                                          ethnicity,
-                                          NA))
+# feature_df <- feature_df %>% mutate(#bmi = weight / (height / 100)^2,
+#                        
+#                        
+#                        race = ifelse(race %in% c("Black", "White"), race, NA),
+#                        
+#                        ethnicity = ifelse(ethnicity == "Unknown/not reported",
+#                                                  NA,
+#                                                  ethnicity),
+#                        ethnicity = ifelse(ethnicity %in% c("Hispanic or Latino",
+#                                                            "Not Hispanic or Latino"),
+#                                           ethnicity,
+#                                           NA))
 
 # # get rid of massive 411 cm height outlier
 # height_outlier_row <- (feature_df$datafile == "156.csv" & 
@@ -221,27 +221,27 @@ colnames(feature_df)
 ```
 
 ```{r}
-# using for gmi later on
-mean_bg_full_day <- feature_df$mean_bg_full_day
-
-feature_df <- feature_df %>% 
-  select(-first_day_cgm, 
-         -last_day_cgm, 
-         
-         # very few patients are hispanic, so removing bc near zero variance.
-         -ethnicity,
-
-         -datafile, 
-         -study_start_date, 
-         -dataset,
-         -cgm_name,
-         # -height,
-         -years_since_diag,
-         -metformin,
-         -a1c_count) %>% 
-
-  # perfectly correlated with _nighttime and _daytime columns, so removing
-  select(-ends_with("full_day"))
+# # using for gmi later on
+# mean_bg_full_day <- feature_df$mean_bg_full_day
+# 
+# feature_df <- feature_df %>% 
+#   select(-first_day_cgm, 
+#          -last_day_cgm, 
+#          
+#          # very few patients are hispanic, so removing bc near zero variance.
+#          -ethnicity,
+# 
+#          -datafile, 
+#          -study_start_date, 
+#          -dataset,
+#          -cgm_name,
+#          # -height,
+#          -years_since_diag,
+#          -metformin,
+#          -a1c_count) %>% 
+# 
+#   # perfectly correlated with _nighttime and _daytime columns, so removing
+#   select(-ends_with("full_day"))
 ```
 
 ```{r}
@@ -282,28 +282,28 @@ set.seed(1)
 ```
 
 ```{r}
-unique_patients <- 
-  feature_df %>% 
-  select(id) %>% 
-  group_by(id) %>% 
-  slice(1) %>% 
-  ungroup() %>% 
-  sample_frac(0.65)
-
-training <-
-  feature_df %>%
-  rowid_to_column("index") %>% 
-  right_join(unique_patients, by = "id") %>% 
-  pull("index")
-
-train_df <- pre_processed[training, ]
-test_df <- pre_processed[-training, ]
-
-train_df_no_race <- select(train_df, -raceBlack, -raceWhite)
-test_df_no_race <- select(test_df, -raceBlack, -raceWhite)
-
-train_outcome <- outcome_a1c[training]
-test_outcome <- outcome_a1c[-training]
+# unique_patients <- 
+#   feature_df %>% 
+#   select(id) %>% 
+#   group_by(id) %>% 
+#   slice(1) %>% 
+#   ungroup() %>% 
+#   sample_frac(0.65)
+# 
+# training <-
+#   feature_df %>%
+#   rowid_to_column("index") %>% 
+#   right_join(unique_patients, by = "id") %>% 
+#   pull("index")
+# 
+# train_df <- pre_processed[training, ]
+# test_df <- pre_processed[-training, ]
+# 
+# train_df_no_race <- select(train_df, -raceBlack, -raceWhite)
+# test_df_no_race <- select(test_df, -raceBlack, -raceWhite)
+# 
+# train_outcome <- outcome_a1c[training]
+# test_outcome <- outcome_a1c[-training]
 ```
 
 ```{r}

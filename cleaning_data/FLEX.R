@@ -149,5 +149,5 @@ if (!only_unique_patients) {
 
 write_main_csvs(cleaned_dfs, CLEANED_DATA_PATH)
 
-split_cgm_into_patients(CLEANED_DATA_PATH)
+# split_cgm_into_patients(CLEANED_DATA_PATH)
 
