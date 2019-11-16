@@ -1,6 +1,10 @@
 # Plots a1c and cgm data.
 
 library(GGally)
+library(tidyverse)
+library(gridExtra)
+
+theme_set(theme_bw())
 
 datasets <- c(
   "RT_CGM_Randomized_Clinical_Trial",
@@ -17,7 +21,7 @@ for (d in datasets) {
            sd_bg_full_day, percent_in_target_range_full_day, 
            percent_high_full_day) %>% 
     ggpairs(title = d) %>% 
-    ggsave(paste0("lib/analysis/", d, ".pdf"), ., height = 20, width = 20)
+    ggsave(paste0("lib/analysis/plots/", d, ".pdf"), ., height = 20, width = 20)
 }
 
 # CMetformin has the fewest a1c measurements by far. 
