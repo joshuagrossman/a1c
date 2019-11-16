@@ -14,6 +14,8 @@ datasets <- c(
   "Protocol_H"
 )
 
+feature_df <- read_csv("data/train.csv")
+
 for (d in datasets) {
   feature_df %>% 
     filter(dataset == d) %>% 

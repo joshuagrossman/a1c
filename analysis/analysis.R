@@ -1,5 +1,21 @@
-# Analyzes cgm, a1c, and measurement data.
+# analysis.R
+# Analyzes cgm, a1c, and demographic data.
 # Author: Josh Grossman
+
+################################################################################
+#
+# IMPORTANT NOTE TO READER: 
+# The full reposistory of code used for this project can be found at the 
+# following link: https://github.com/joshuagrossman/a1c
+#
+# The code attached to the project is only the code required for analysis.
+# There are *many* other files written to clean and process the combined
+# datasets used in this project (several GBs).
+#
+# The code to create the best regression and classification model has been 
+# surrounded with 3 lines of hashes above and below. 
+#
+################################################################################
 
 source("lib/analysis/helpers.R")
 
@@ -9,6 +25,7 @@ library(lubridate)
 library(randomForest)
 library(furrr)
 library(e1071)
+library(ROCR)
 
 # For fitting random forest models quickly.
 library(doParallel)
@@ -58,8 +75,8 @@ test_df <- cleaned_df[-training, ]
 # nrow(train_df) + nrow(test_df)
 # nrow(inner_join(train_df, test_df, by = "id"))
 
-#write_csv(train_df, "data/train.csv")
-#write_csv(test_df, "data/test.csv")
+# write_csv(train_df, "data/train.csv")
+# write_csv(test_df, "data/test.csv")
 
 #train_df <- read_csv("data/train.csv")
 #test_df <- read_csv("data/test.csv")
@@ -74,11 +91,12 @@ gmi_rmse <- sqrt(mean((outcome_a1c - gmi)^2))
 
 # Using AUC for classification evaluation.
 unhealthy_a1c <- train_df$unhealthy_a1c
-gmi_auc <- ROCR::performance(ROCR::prediction(gmi_unhealthy, unhealthy_a1c), "auc")@y.values[[1]]
-#gmi_accuracy <- mean(as.integer(unhealthy_a1c) == gmi_unhealthy)
+gmi_auc <- performance(prediction(gmi_unhealthy, unhealthy_a1c), "auc")@y.values[[1]]
 
-# Model set-up
-train_df$unhealthy_a1c <- if_else(train_df$unhealthy_a1c == 1, "Unhealthy", "Healthy")
+######################## MODEL SETUP ###########################################
+
+train_df$unhealthy_a1c <- if_else(train_df$unhealthy_a1c == 1, 
+                                  "Unhealthy", "Healthy")
 
 covars <- c("mean_bg_full_day", "sd_bg_full_day", 
             "cv_bg_full_day", "percent_very_low_full_day", 
@@ -107,6 +125,8 @@ set_up_model <- function(outcome_name, covars) {
 
 pre_processed_regression <- set_up_model("a1c_value", covars)
 pre_processed_classification <- set_up_model("unhealthy_a1c", covars)
+
+######################## REGRESSION: PART 1 ####################################
 
 # Ensures that patients are not in both train and validation sets.
 fit_control <- trainControl(method = "repeatedcv",
@@ -201,7 +221,7 @@ list(gmi_rmse = gmi_rmse) %>%
 train_df <- mutate(train_df, 
                    a1c_resid = a1c_value - predict(race_sd_lm_fit, train_df))
 
-### Classification, identical modeling steps. 
+######################## CLASSIFICATION ########################################
 
 # Ensures that patients are not in both train and validation sets.
 class_fit_control <- trainControl(method = "repeatedcv",
@@ -247,12 +267,22 @@ race_ethnicity_glm_fit <-
         metric = "ROC",
         trControl = class_fit_control)
 
+################################################################################
+################################################################################
+################################################################################
+
+# BEST CLASSIFICATION MODEL (logistic MRS model)
+
 race_sd_glm_fit <- 
   train(unhealthy_a1c ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
         train_df,
         method = "glm",
         metric = "ROC",
         trControl = class_fit_control)
+
+################################################################################
+################################################################################
+################################################################################
 
 class_lasso2_fit <- train(unhealthy_a1c ~ .*.,
                     bind_cols(unhealthy_a1c = train_df$unhealthy_a1c, pre_processed_classification),
@@ -295,6 +325,8 @@ list(gmi_auc = gmi_auc) %>%
 train_df <- mutate(train_df, 
                    unhealthy_resid = as.integer(unhealthy_a1c == predict(race_sd_glm_fit, train_df)))
 
+######################## REGRESSION: PART 2 ####################################
+
 train_df <- extract_last_a1c(train_df)
 
 # Spike of people with at least 70 days between a1c measurements, less than
@@ -311,8 +343,6 @@ short_fit_control <- trainControl(method = "repeatedcv",
                                   verboseIter = FALSE,
                                   allowParallel = TRUE)
 
-# Back to regression with smaller dataset.
-
 # Baseline models are GMI and simply predicting the same a1c as last time.
 short_gmi <- 3.31 + 0.02392 * short_train_df$mean_bg_full_day
 short_carryover_a1c <- short_train_df$last_a1c_value
@@ -321,22 +351,31 @@ short_outcome_a1c <- short_train_df$a1c_value
 short_gmi_rmse <- sqrt(mean((short_outcome_a1c - short_gmi)^2))
 carryover_rmse <- sqrt(mean((short_outcome_a1c - short_carryover_a1c)^2))
 
-# Best model from before.
+# MRS model.
 former_fit <-
   train(a1c_value ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
         short_train_df,
         method = "lm",
         trControl = short_fit_control)
 
-# Best model augmented with the previous a1c value.
+################################################################################
+################################################################################
+################################################################################
+
+# BEST REGRESSION MODEL (MRS+)
+
 last_a1c_former_fit <- 
   train(a1c_value ~ 1 + last_a1c_value + mean_bg_full_day + black + sd_bg_full_day,
         short_train_df,
         method = "lm",
         trControl = short_fit_control)
 
+################################################################################
+################################################################################
+################################################################################
+
 # Best model augmented with the previous a1c value and the residual from
-# previous prediction.
+# previous prediction. (MRS++)
 resid_last_a1c_former_fit <- 
   train(a1c_value ~ 1 + last_a1c_value + mean_bg_full_day + black + sd_bg_full_day + last_a1c_resid,
         short_train_df,
@@ -353,7 +392,7 @@ list(short_gmi_rmse = short_gmi_rmse,
              resid_last_a1c_former_cv_rmse = resid_last_a1c_former_fit),
         extract_cv_rmse))
 
-### Cross-dataset validation.
+#################### CROSS-DATASET VALIDATION: REGRESSION ######################
 
 # Ensure that the same dataset is not in both train and validation sets during CV.
 short_cross_fit_control <- trainControl(method = "repeatedcv",
@@ -383,6 +422,8 @@ short_train_df %>%
   inner_join(tibble(`MRS+_RMSE` = cv_rmses, n = fold_lengths), by = "n") %>% 
   mutate(percent_change = (`MRS+_RMSE` - GMI_RMSE) / GMI_RMSE)
 
+#################### CROSS-DATASET VALIDATION: CLASSIFICATION ##################
+
 # Ensure that the same dataset is not in both train and validation sets during CV.
 cross_fit_control <- trainControl(method = "repeatedcv",
                                   index = groupKFold(train_df$dataset, 5),
@@ -402,7 +443,7 @@ mrs_class_cross_fit <-
 cv_auc <- mrs_class_cross_fit$resample$ROC
 cv_auc
 
-# Generate ROC curve for logistic MRS model
+#################### ROC CURVE FOR LOGISTIC MRS MODEL ##########################
 
 set.seed(1)
 roc_train <- sample(1:nrow(train_df), round(0.8 * nrow(train_df)))

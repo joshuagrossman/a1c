@@ -1,7 +1,8 @@
-"Helper functions for analysis of CGM data."
+# helpers.R
+# Helper functions for analysis of CGM data.
+# # Author: Josh Grossman
 
 library(tidyverse)
-library(ROCR)
 
 load_and_filter <- function(data, write = FALSE) {
   # Loads raw feature data and filters/cleans.
