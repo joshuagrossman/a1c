@@ -18,6 +18,10 @@ load_and_filter <- function(data, write = FALSE) {
                        -ends_with("daytime"),
                        -ends_with("nighttime"))
   
+  # A1c of 7-7.5 is a safe target for diabetics.
+  feature_df <- mutate(feature_df, 
+                       unhealthy_a1c = as.integer(a1c_value > 7.5))
+  
   # # Data contains 5,678 a1c measurements.
   # nrow(data)
   
@@ -123,11 +127,17 @@ extract_last_a1c <- function(feature_df) {
   new_cols <- grouped_df %>% 
     group_map(~ select(., last_a1c_value = a1c_value, 
                        last_a1c_date = a1c_date,
-                       last_a1c_resid = a1c_resid)) %>% 
+                       # last_a1c_resid = a1c_resid,
+                       # last_unhealthy_a1c = unhealthy_a1c,
+                       # last_unhealthy_resid = unhealthy_resid
+                       )) %>% 
     map(~ head(., -1)) %>% 
     map(~ bind_rows(tibble(last_a1c_value = NA, 
                            last_a1c_date = NA,
-                           last_a1c_resid = NA), .)) %>% 
+                           # last_a1c_resid = NA,
+                           # last_unhealthy_a1c = NA,
+                           # last_unhealthy_resid = NA
+                           ), .)) %>% 
     reduce(bind_rows)
   
   bind_cols(grouped_df, new_cols) %>% 

@@ -2,21 +2,6 @@
 # Analyzes cgm, a1c, and demographic data.
 # Author: Josh Grossman
 
-################################################################################
-#
-# IMPORTANT NOTE TO READER: 
-# The full reposistory of code used for this project can be found at the 
-# following link: https://github.com/joshuagrossman/a1c
-#
-# The code attached to the project is only the code required for analysis.
-# There are *many* other files written to clean and process the combined
-# datasets used in this project (several GBs).
-#
-# The code to create the best regression and classification model has been 
-# surrounded with 3 lines of hashes above and below. 
-#
-################################################################################
-
 source("lib/analysis/helpers.R")
 
 library(caret)
@@ -34,497 +19,448 @@ registerDoParallel(cl)
 
 set.seed(1)
 
-TRAIN_FRAC <- 0.8
-
-# Each row is 1 a1c measurement across the 5 datasets. Potentially multiple a1c
-# measurements for each patient.
+# Each row is 1 a1c measurement across the 5 datasets. Potentially
+# multiple a1c measurements for each patient.
 data <- read_csv("data/features.csv")
+
+# 5678 HbA1c, 1296 patients
+nrow(data)
+length(unique(data$id))
 
 cleaned_df <- load_and_filter(data)
 
-# <10 missing CGM statistics (out of tens of thousands) filled in using simple
-# median imputation.
-# Missing ages were cast as mean(age) in `load_and_filter`, and will be 
-# accounted for later on using interaction term per Gelman/Hill chapter.
+# 3559 HbA1c, 1095 patients
+nrow(cleaned_df)
+length(unique(cleaned_df$id))
+
+# <10 missing CGM statistics (out of tens of thousands) filled in
+# using simple median imputation. Missing ages were aribtrarily cast
+# as mean(age) in `load_and_filter`, but will be accounted for later
+# on using missingness interaction term per Gelman/Hill.
 cleaned_df <- preProcess(cleaned_df, method = "medianImpute") %>%
   predict(cleaned_df) %>% 
   as.data.frame()
 
-# Generate train and test data.
-# Don't want the same patient to exist in the train and test data because
-# multiple outcomes per patient.
-training_ids <- 
-  cleaned_df %>% 
-  select(id) %>% 
-  group_by(id) %>% 
-  slice(1) %>% 
-  ungroup() %>% 
-  sample_frac(TRAIN_FRAC)
+train_df <- cleaned_df
 
-training <-
-  cleaned_df %>%
-  rowid_to_column("index") %>% 
-  right_join(training_ids, by = "id") %>% 
-  pull("index")
-
-train_df <- cleaned_df[training, ]
-test_df <- cleaned_df[-training, ]
-
-# # Check that there are no matching IDs in train and test sets.
-# nrow(cleaned_df)
-# nrow(train_df) + nrow(test_df)
-# nrow(inner_join(train_df, test_df, by = "id"))
-
-# write_csv(train_df, "data/train.csv")
-# write_csv(test_df, "data/test.csv")
-
-#train_df <- read_csv("data/train.csv")
-#test_df <- read_csv("data/test.csv")
-
-# Baseline models for regression and classification. Current "gold-standard".
-gmi <- 3.31 + 0.02392 * train_df$mean_bg_full_day
-gmi_unhealthy <- as.numeric(gmi > 7.5)
-
-# Using RMSE for regression evaluation.
-outcome_a1c <- train_df$a1c_value
-gmi_rmse <- sqrt(mean((outcome_a1c - gmi)^2))
-
-# Using AUC for classification evaluation.
-unhealthy_a1c <- train_df$unhealthy_a1c
-gmi_auc <- performance(prediction(gmi_unhealthy, unhealthy_a1c), "auc")@y.values[[1]]
-
-######################## MODEL SETUP ###########################################
-
-train_df$unhealthy_a1c <- if_else(train_df$unhealthy_a1c == 1, 
-                                  "Unhealthy", "Healthy")
+######################## MODEL SETUP #################################
 
 covars <- c("mean_bg_full_day", "sd_bg_full_day", 
             "cv_bg_full_day", "percent_very_low_full_day", 
-            "percent_low_full_day", "percent_in_target_range_full_day", 
+            "percent_low_full_day", 
+            "percent_in_target_range_full_day", 
             "percent_in_conservative_target_range_full_day", 
             "percent_high_full_day", "percent_very_high_full_day", 
-            "in_target_range_mean_bg_full_day", "high_mean_bg_full_day", 
+            "in_target_range_mean_bg_full_day", 
+            "high_mean_bg_full_day", 
             "in_target_range_sd_bg_full_day", "high_sd_bg_full_day", 
             "in_target_range_cv_bg_full_day", "high_cv_bg_full_day", 
             "male", "log(age):has_age", "I(log(age)^2):has_age",
             "black", "hispanic")
 
 make_formula <- function(outcome, covars) {
-  as.formula(paste0(outcome, " ~ 1 + ", paste(covars, collapse = " + ")))
+  as.formula(paste0(outcome, " ~ 1 + ", 
+                    paste(covars, collapse = " + ")))
 }
 
-set_up_model <- function(outcome_name, covars) {
-  dummied <- dummyVars(make_formula(outcome_name, covars), train_df,
+set_up_model <- function(outcome_name, covars, df) {
+  dummied <- dummyVars(make_formula(outcome_name, covars), df,
                        fullRank = TRUE) %>%
-    predict(train_df)
+    predict(df)
 
   preProcess(dummied, method = "medianImpute") %>%
     predict(dummied) %>%
     as.data.frame()
 }
 
-pre_processed_regression <- set_up_model("a1c_value", covars)
-pre_processed_classification <- set_up_model("unhealthy_a1c", covars)
+######### HYPERPARAMETER TUNING, NO PAST HBA1C #######################
 
-######################## REGRESSION: PART 1 ####################################
+pre_processed_regression <- set_up_model("a1c_value", covars, train_df)
+outcome_a1c <- train_df$a1c_value
 
 # Ensures that patients are not in both train and validation sets.
-fit_control <- trainControl(method = "repeatedcv",
-                            index = groupKFold(train_df$id, 5),
-                            verboseIter = FALSE,
-                            allowParallel = TRUE)
+tuning_folds <- groupKFold(train_df$id, 5)
 
-# Sequential model fitting.
+tuning_fit_control <- 
+  trainControl(method = "repeatedcv",
+               index = tuning_folds,
+               verboseIter = FALSE,
+               allowParallel = TRUE)
+
+# Use LASSO to find predictive coefficients.
+lambdas <- 10 ^ seq(-3, 1, length = 100)
+tuning_lasso_fit <- train(pre_processed_regression,
+                          outcome_a1c,
+                          method = "glmnet",
+                          tuneGrid = data.frame(alpha = 1,
+                                                lambda = lambdas),
+                          trControl = tuning_fit_control)
+plot(tuning_lasso_fit, xTrans = log, xlab = "log lambda") 
+best_lambda_lasso <- tuning_lasso_fit$bestTune$lambda
+
+# # SD of blood glucose and ethnicity look promising.
+# coef(lasso_fit$finalModel, lasso_fit$bestTune$lambda)
+# 
+# # Adding ethnicity does not reduce RMSE much. Note that not a lot of
+# # Hispanic patients in the data.
+# race_ethnicity_lm_fit <- 
+#   train(a1c_value ~ 1 + mean_bg_full_day + black + hispanic,
+#         train_df,
+#         method = "lm",
+#         trControl = fit_control)
+# 
+# # SD brings down RMSE almost to same level as LASSO.
+# race_sd_lm_fit <- 
+#   train(a1c_value ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
+#         train_df,
+#         method = "lm",
+#         trControl = fit_control)
+
+# LASSO with all interactions.
+tuning_lasso2_fit <- train(a1c_value ~ .*.,
+                     bind_cols(a1c_value = outcome_a1c, 
+                               pre_processed_regression),
+                     method = "glmnet",
+                     tuneGrid = data.frame(alpha = 1,
+                                           lambda = lambdas),
+                     trControl = tuning_fit_control)
+plot(tuning_lasso2_fit, xTrans = log, xlab = "log lambda") 
+best_lambda_lasso2 <- tuning_lasso2_fit$bestTune$lambda
+
+# Random Forest.
+tuning_rf_fit <- train(pre_processed_regression,
+                       outcome_a1c,
+                       method = "rf",
+                       tuneGrid = expand.grid(.mtry=c(1:10)),
+                       trControl = tuning_fit_control)
+plot(tuning_rf_fit)
+best_mtry <- tuning_rf_fit$bestTune$mtry
+
+######### PERFORMANCE METRICS, NO PAST HBA1C  ########################
+
+# Ensures that patients are not in both train and validation sets.
+training_folds <- groupKFold(train_df$id, 5)
+
+training_fit_control <- 
+  trainControl(method = "repeatedcv",
+               index = training_folds,
+               verboseIter = FALSE,
+               allowParallel = TRUE,
+               savePredictions = TRUE)
 
 # GMI is trained on just mean blood glucose, so reproducing.
 basic_lm_fit <- train(a1c_value ~ 1 + mean_bg_full_day,
                       train_df,
                       method = "lm",
-                      trControl = fit_control)
+                      trControl = training_fit_control)
 
-basic_lm_fit$finalModel
-
-# There is evidence that a1c differs across race, so adding into model.
 race_lm_fit <- train(a1c_value ~ 1 + mean_bg_full_day + black,
                      train_df,
                      method = "lm",
-                     trControl = fit_control)
+                     trControl = training_fit_control)
 
-# Using LASSO to find predictive coefficients.
-lambdas <- 10 ^ seq(-3, 1, length = 100)
+race_sd_lm_fit <- train(a1c_value ~ 1 + mean_bg_full_day + 
+                          sd_bg_full_day + black,
+                         train_df,
+                         method = "lm",
+                         trControl = training_fit_control)
+
 lasso_fit <- train(pre_processed_regression,
                    outcome_a1c,
                    method = "glmnet",
                    tuneGrid = data.frame(alpha = 1,
-                                         lambda = lambdas),
-                   trControl = fit_control)
-plot(lasso_fit, xTrans = log) 
+                                         lambda = best_lambda_lasso),
+                   trControl = training_fit_control)
 
-# SD of blood glucose and ethnicity look promising. Other covariates are 
-# almost too "specific", so will try to reduce RMSE to LASSO level by adding 
-# the most interpretable covariates as possible.
-coef(lasso_fit$finalModel, lasso_fit$bestTune$lambda)
-
-# Adding ethnicity does not reduce RMSE much. Note that not a lot of Hispanic
-# patients in the data.
-race_ethnicity_lm_fit <- 
-  train(a1c_value ~ 1 + mean_bg_full_day + black + hispanic,
-        train_df,
-        method = "lm",
-        trControl = fit_control)
-
-# SD brings down RMSE almost to same level as LASSO.
-race_sd_lm_fit <- 
-  train(a1c_value ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
-        train_df,
-        method = "lm",
-        trControl = fit_control)
-
-# LASSO with all interactions does not improve much on LASSO.
 lasso2_fit <- train(a1c_value ~ .*.,
-                    bind_cols(a1c_value = outcome_a1c, pre_processed_regression),
+                    bind_cols(a1c_value = outcome_a1c, 
+                             pre_processed_regression),
                     method = "glmnet",
-                    tuneGrid = data.frame(alpha = 1,
-                                          lambda = lambdas),
-                    trControl = fit_control)
-plot(lasso2_fit, xTrans = log) 
+                    tuneGrid = 
+                      data.frame(alpha = 1,
+                                 lambda = best_lambda_lasso2),
+                    trControl = training_fit_control)
 
-# Random Forest does not improve much beyond LASSO.
 rf_fit <- train(pre_processed_regression,
-                outcome_a1c,
-                method = "rf",
-                tuneGrid = expand.grid(.mtry=c(1:15)),
-                trControl = fit_control)
-plot(rf_fit)
+                       outcome_a1c,
+                       method = "rf",
+                       tuneGrid = data.frame(mtry = best_mtry),
+                       trControl = training_fit_control)
+
+# calculate GMI RMSE on the training folds
+rmses <- c()
+for (fold in training_folds) {
+  gmi_fold <- 3.31 + 0.02392 * train_df$mean_bg_full_day[fold]
+  a1c_fold <- outcome_a1c[fold]
+  rmse <- sqrt(mean((a1c_fold - gmi_fold)^2))
+  rmses <- c(rmses, rmse)
+}
+
+gmi_results <- tibble(model = "GMI", 
+                      mean_rmse = mean(rmses), 
+                      sd_rmse = sd(rmses))
 
 extract_cv_rmse <- function(fit) {
-  mean(fit$resample$RMSE)
+  model <- names(fit)
+  rmse <- fit[[model]]$resample$RMSE
+  list(model = model, mean_rmse = mean(rmse), sd_rmse = sd(rmse))
 }
 
-# LASSO performs just as well as LASSO^2 and RF. 
-# LM w/ race is pretty good though, and more "interpretable".
-# LM w/ race and SD is also interpretable, and gets close to LASSO. Best model.
-list(gmi_rmse = gmi_rmse) %>% 
-  append(
-    map(list(basic_lm_cv_rmse = basic_lm_fit, 
-             race_lm_cv_rmse = race_lm_fit,
-             race_ethnicity_lm_cv_rmse = race_ethnicity_lm_fit,
-             race_sd_lm_cv_rmse = race_sd_lm_fit,
-             lasso_cv_rmse = lasso_fit,
-             lasso2_cv_rmse = lasso2_fit,
-             rf_cv_rmse = rf_fit),
-             extract_cv_rmse))
+(performance <- 
+    bind_rows(gmi_results, 
+              map_dfr(list(
+                list(LM_BG = basic_lm_fit), 
+                list(LM_BG_RACE = race_lm_fit),
+                list(LM_BG_RACE_SD = race_sd_lm_fit),
+                list(LASSO = lasso_fit),
+                list(LASSO2 = lasso2_fit),
+                list(RF = rf_fit)
+                ), extract_cv_rmse))) %>% write_csv("lib/analysis/results/full_models_cv.csv")
 
-# Add predictions from best model for later evaluation. Perhaps individuals
-# consistently score above or below model, so can use residual in future 
-# prediction after initial HbA1c lab measurement.
+# Add predictions from best model for later evaluation. Perhaps
+# individuals consistently score above or below model, so can use
+# residual in future prediction after initial HbA1c lab measurement.
 train_df <- mutate(train_df, 
-                   a1c_resid = a1c_value - predict(race_sd_lm_fit, train_df))
+                   a1c_resid = a1c_value - predict(race_sd_lm_fit, 
+                                                   train_df))
 
-######################## CLASSIFICATION ########################################
-
-# Ensures that patients are not in both train and validation sets.
-class_fit_control <- trainControl(method = "repeatedcv",
-                            index = groupKFold(train_df$id, 5),
-                            verboseIter = FALSE,
-                            allowParallel = TRUE,
-                            classProbs = TRUE,
-                            summaryFunction = twoClassSummary)
-
-basic_glm_fit <- train(unhealthy_a1c ~ 1 + mean_bg_full_day,
-                      train_df,
-                      method = "glm",
-                      family = binomial(),
-                      metric = "ROC",
-                      trControl = class_fit_control)
-
-race_glm_fit <- train(unhealthy_a1c ~ 1 + mean_bg_full_day + black,
-                     train_df,
-                     method = "glm",
-                     family = binomial(),
-                     metric = "ROC",
-                     trControl = class_fit_control)
-
-lambdas <- 10 ^ seq(-3, 1, length = 100)
-
-class_lasso_fit <- train(pre_processed_classification,
-                   train_df$unhealthy_a1c,
-                   method = "glmnet",
-                   family = "binomial",
-                   tuneGrid = data.frame(alpha = 1,
-                                         lambda = lambdas),
-                   metric = "ROC",
-                   trControl = class_fit_control)
-plot(class_lasso_fit, xTrans = log) 
-
-coef(class_lasso_fit$finalModel, class_lasso_fit$bestTune$lambda)
-
-race_ethnicity_glm_fit <- 
-  train(unhealthy_a1c ~ 1 + mean_bg_full_day + black + hispanic,
-        train_df,
-        method = "glm",
-        family = binomial(),
-        metric = "ROC",
-        trControl = class_fit_control)
-
-################################################################################
-################################################################################
-################################################################################
-
-# BEST CLASSIFICATION MODEL (logistic MRS model)
-
-race_sd_glm_fit <- 
-  train(unhealthy_a1c ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
-        train_df,
-        method = "glm",
-        metric = "ROC",
-        trControl = class_fit_control)
-
-################################################################################
-################################################################################
-################################################################################
-
-class_lasso2_fit <- train(unhealthy_a1c ~ .*.,
-                    bind_cols(unhealthy_a1c = train_df$unhealthy_a1c, pre_processed_classification),
-                    method = "glmnet",
-                    family = "binomial",
-                    tuneGrid = data.frame(alpha = 1,
-                                          lambda = lambdas),
-                    metric = "ROC",
-                    trControl = class_fit_control)
-plot(class_lasso2_fit, xTrans = log) 
-
-class_rf_fit <- train(pre_processed_classification,
-                train_df$unhealthy_a1c,
-                method = "rf",
-                family = "binomial",
-                tuneGrid = expand.grid(.mtry=c(1:15)),
-                metric = "ROC",
-                trControl = class_fit_control)
-plot(class_rf_fit)
-
-extract_cv_auc <- function(fit) {
-  mean(fit$resample$ROC)
-}
-
-# Nothing is *that* much better than GMI in terms of accuracy.
-# Again, though, a linear model with race/mean BG/sd BG works just as well
-# as the more complicated models, so will call this the best model.
-list(gmi_auc = gmi_auc) %>% 
-  append(
-    map(list(basic_glm_cv_auc = basic_glm_fit, 
-             race_glm_cv_auc = race_glm_fit,
-             race_ethnicity_glm_cv_auc = race_ethnicity_glm_fit,
-             race_sd_glm_cv_auc = race_sd_glm_fit,
-             class_lasso_cv_auc = class_lasso_fit,
-             class_lasso2_cv_auc = class_lasso2_fit,
-             class_rf_cv_auc = class_rf_fit),
-        extract_cv_auc))
-
-# Adding residuals for potential later modeling.
-train_df <- mutate(train_df, 
-                   unhealthy_resid = as.integer(unhealthy_a1c == predict(race_sd_glm_fit, train_df)))
-
-######################## REGRESSION: PART 2 ####################################
+########## HYPERPARAMETER TUNING, W/ PAST HBA1C ######################
 
 train_df <- extract_last_a1c(train_df)
 
-# Spike of people with at least 70 days between a1c measurements, less than
-# that could skew results since a1c is correlated over time.
-# Typically a1c measured every 3 months, red blood cells turn over every 2-3
-# months, so this is a reasonable timeframe.
+# Spike of people with at least 70 days between a1c measurements, less
+# than that could bias results since a1c is correlated over time.
+# Typically a1c measured every 3 months, red blood cells turn over
+# every 2-3 months, so this is a reasonable timeframe.
 short_train_df <- train_df %>% 
   filter(days_since_last_a1c > 69,
          ! is.na(last_a1c_value))
 
-# Ensure that patients are not in both train and validation sets during CV.
-short_fit_control <- trainControl(method = "repeatedcv",
-                                  index = groupKFold(short_train_df$id, 5),
-                                  verboseIter = FALSE,
-                                  allowParallel = TRUE)
+nrow(short_train_df)
+length(unique(short_train_df$id))
 
-# Baseline models are GMI and simply predicting the same a1c as last time.
-short_gmi <- 3.31 + 0.02392 * short_train_df$mean_bg_full_day
-short_carryover_a1c <- short_train_df$last_a1c_value
-short_outcome_a1c <- short_train_df$a1c_value
+short_pre_processed_regression <- 
+  set_up_model("a1c_value", c(covars, "last_a1c_value", "last_a1c_resid"), 
+               short_train_df)
+short_outcome_a1c <- 
+  short_train_df$a1c_value
 
-short_gmi_rmse <- sqrt(mean((short_outcome_a1c - short_gmi)^2))
-carryover_rmse <- sqrt(mean((short_outcome_a1c - short_carryover_a1c)^2))
+# Ensure that patients are not in both train and validation sets
+# during CV.
+short_tuning_folds <- groupKFold(short_train_df$id, 5)
 
-# MRS model.
-former_fit <-
+short_tuning_fit_control <- 
+  trainControl(method = "repeatedcv",
+               index = short_tuning_folds,
+               verboseIter = FALSE,
+               allowParallel = TRUE)
+
+# Use LASSO to find predictive coefficients.
+lambdas <- 10 ^ seq(-3, 1, length = 100)
+short_tuning_lasso_fit <- train(short_pre_processed_regression,
+                          short_outcome_a1c,
+                          method = "glmnet",
+                          tuneGrid = data.frame(alpha = 1,
+                                                lambda = lambdas),
+                          trControl = short_tuning_fit_control)
+plot(short_tuning_lasso_fit, xTrans = log, xlab = "log lambda") 
+short_best_lambda_lasso <- short_tuning_lasso_fit$bestTune$lambda
+
+short_tuning_lasso2_fit <- train(a1c_value ~ .*.,
+                           bind_cols(a1c_value = short_outcome_a1c, 
+                                     short_pre_processed_regression),
+                           method = "glmnet",
+                           tuneGrid = data.frame(alpha = 1,
+                                                 lambda = lambdas),
+                           trControl = short_tuning_fit_control)
+plot(short_tuning_lasso2_fit, xTrans = log, xlab = "log lambda") 
+short_best_lambda_lasso2 <- short_tuning_lasso2_fit$bestTune$lambda
+
+short_tuning_rf_fit <- train(short_pre_processed_regression,
+                       short_outcome_a1c,
+                       method = "rf",
+                       tuneGrid = expand.grid(.mtry=c(1:10)),
+                       trControl = short_tuning_fit_control)
+plot(tuning_rf_fit)
+short_best_mtry <- short_tuning_rf_fit$bestTune$mtry
+
+########## PERFORMANCE METRICS, W/ PAST HBA1C ########################
+
+short_training_folds <- groupKFold(short_train_df$id, 5)
+
+short_training_fit_control <- 
+  trainControl(method = "repeatedcv",
+               index = short_training_folds,
+               verboseIter = FALSE,
+               allowParallel = TRUE,
+               savePredictions = TRUE)
+
+short_mrs_fit <-
   train(a1c_value ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
         short_train_df,
         method = "lm",
-        trControl = short_fit_control)
+        trControl = short_training_fit_control)
 
-################################################################################
-################################################################################
-################################################################################
-
-# BEST REGRESSION MODEL (MRS+)
-
-last_a1c_former_fit <- 
-  train(a1c_value ~ 1 + last_a1c_value + mean_bg_full_day + black + sd_bg_full_day,
+short_mrs_a1c_fit <- 
+  train(a1c_value ~ 1 + last_a1c_value + mean_bg_full_day + 
+          black + sd_bg_full_day,
         short_train_df,
         method = "lm",
-        trControl = short_fit_control)
+        trControl = short_training_fit_control)
 
-################################################################################
-################################################################################
-################################################################################
-
-# Best model augmented with the previous a1c value and the residual from
-# previous prediction. (MRS++)
-resid_last_a1c_former_fit <- 
-  train(a1c_value ~ 1 + last_a1c_value + mean_bg_full_day + black + sd_bg_full_day + last_a1c_resid,
+short_mrs_a1c_resid_fit <- 
+  train(a1c_value ~ 1 + last_a1c_value + mean_bg_full_day + black + 
+          sd_bg_full_day + last_a1c_resid,
         short_train_df,
         method = "lm",
-        trControl = short_fit_control)
+        trControl = short_training_fit_control)
 
-# Including the previous a1c substantially improves the RMSE. Adding the
-# residual doesn't do much beyond that.
-list(short_gmi_rmse = short_gmi_rmse,
-     carryover_rmse = carryover_rmse) %>% 
-  append(
-    map(list(former_cv_rmse = former_fit, 
-             last_a1c_former_cv_rmse = last_a1c_former_fit,
-             resid_last_a1c_former_cv_rmse = resid_last_a1c_former_fit),
-        extract_cv_rmse))
+short_lasso_fit <- train(short_pre_processed_regression,
+                   short_outcome_a1c,
+                   method = "glmnet",
+                   tuneGrid = data.frame(alpha = 1,
+                                         lambda = short_best_lambda_lasso),
+                   trControl = short_training_fit_control)
 
-#################### CROSS-DATASET VALIDATION: REGRESSION ######################
+short_lasso2_fit <- train(a1c_value ~ .*.,
+                    bind_cols(a1c_value = short_outcome_a1c, 
+                              short_pre_processed_regression),
+                    method = "glmnet",
+                    tuneGrid = 
+                      data.frame(alpha = 1,
+                                 lambda = short_best_lambda_lasso2),
+                    trControl = short_training_fit_control)
 
-# Ensure that the same dataset is not in both train and validation sets during CV.
-short_cross_fit_control <- trainControl(method = "repeatedcv",
-                                  index = groupKFold(short_train_df$dataset, 5),
-                                  verboseIter = FALSE,
-                                  allowParallel = TRUE)
+short_rf_fit <- train(short_pre_processed_regression,
+                short_outcome_a1c,
+                method = "rf",
+                tuneGrid = data.frame(mtry = short_best_mtry),
+                trControl = short_training_fit_control)
+
+short_gmi_rmses <- c()
+short_carryover_rmses <- c()
+
+for (fold in short_training_folds) {
+  short_gmi <- 3.31 + 0.02392 * short_train_df$mean_bg_full_day[fold]
+  short_carryover_a1c <- short_train_df$last_a1c_value[fold]
+  short_a1c <- short_train_df$a1c_value[fold]
+  
+  short_gmi_rmses <- c(short_gmi_rmses, 
+                      sqrt(mean((short_gmi - short_a1c)^2)))
+  
+  short_carryover_rmses <- 
+    c(short_carryover_rmses, 
+      sqrt(mean((short_carryover_a1c - short_a1c)^2)))
+}
+
+short_gmi_results <- tibble(model = "GMI", 
+                            mean_rmse = mean(short_gmi_rmses), 
+                            sd_rmse = sd(short_gmi_rmses))
+
+short_carryover_results <- tibble(model = "CARRY", 
+                            mean_rmse = mean(short_carryover_rmses), 
+                            sd_rmse = sd(short_carryover_rmses))
+
+(performance <- 
+    bind_rows(short_gmi_results, short_carryover_results) %>% 
+    bind_rows(map_dfr(list(
+                list(LM_MRS = short_mrs_fit),
+                list(`LM_MRS+` = short_mrs_a1c_fit),
+                list(`LM_MRS++` = short_mrs_a1c_resid_fit),
+                list(LASSO = short_lasso_fit),
+                list(LASSO2 = short_lasso2_fit),
+                list(RF = short_rf_fit)
+              ), extract_cv_rmse))) %>% write_csv("lib/analysis/results/short_models_cv.csv")
+
+############### CROSS-DATASET PERFORMANCE ##############
+
+gmi <- 3.31 + 0.02392 * train_df$mean_bg_full_day
+short_gmi <- 3.31 + 0.02392 * short_train_df$mean_bg_full_day
+
+gmi_err <- outcome_a1c - gmi
+short_gmi_err <- short_outcome_a1c - short_gmi
+
+sqrt(mean((gmi_err)^2))
+sqrt(mean((short_gmi_err)^2))
+
+# Ensure that the same dataset is not in both train and validation
+# sets during CV.
+cross_fit_control <-
+  trainControl(method = "repeatedcv",
+               index = groupKFold(train_df$dataset, 5),
+               verboseIter = FALSE,
+               allowParallel = TRUE)
+
+# rf_cross_fit <- train(pre_processed_regression,
+#                 outcome_a1c,
+#                 method = "rf",
+#                 tuneGrid = data.frame(mtry = best_mtry),
+#                 trControl = cross_fit_control)
+# 
+# cv_rmses <- rf_cross_fit$resample$RMSE
+# fold_lengths <- map_int(rf_cross_fit$control$indexOut, length)
+
+race_sd_lm_cross_fit <- train(a1c_value ~ 1 + mean_bg_full_day + 
+                          sd_bg_full_day + black,
+                        train_df,
+                        method = "lm",
+                        trControl = cross_fit_control)
+
+cv_rmses <- race_sd_lm_cross_fit$resample$RMSE
+fold_lengths <- map_int(race_sd_lm_cross_fit$control$indexOut, length)
+
+# GMI versus MRS+ error across datasets
+train_df %>%
+  mutate(gmi_err = gmi_err) %>%
+  group_by(dataset) %>%
+  summarize(n = n(),
+            GMI_RMSE = sqrt(mean(gmi_err^2))) %>%
+  inner_join(tibble(LM_RMSE = cv_rmses,
+                    n = fold_lengths), by = "n") %>%
+  mutate(percent_change = (LM_RMSE - GMI_RMSE) / GMI_RMSE) %>% 
+  write_csv("lib/analysis/results/full_cdv.csv")
+
+
+# Ensure that the same dataset is not in both train and validation
+# sets during CV.
+short_cross_fit_control <- 
+  trainControl(method = "repeatedcv",
+               index = groupKFold(short_train_df$dataset, 5),
+               verboseIter = FALSE,
+               allowParallel = TRUE)
 
 mrs_plus_short_cross_fit <- 
-  train(a1c_value ~ 1 + last_a1c_value + mean_bg_full_day + black + sd_bg_full_day,
+  train(a1c_value ~ 1 + last_a1c_value + mean_bg_full_day + 
+          black + sd_bg_full_day,
         short_train_df,
         method = "lm",
         trControl = short_cross_fit_control)
 
 cv_rmses <- mrs_plus_short_cross_fit$resample$RMSE
-fold_lengths <- map_int(mrs_plus_short_cross_fit$control$indexOut, length)
+fold_lengths <- map_int(mrs_plus_short_cross_fit$control$indexOut, 
+                        length)
 
-# Huge improvements for all the studies, though we have to ignore Protocol_F
-# since n is so low, and we can't really trust CMetformin for the same reason.
-# This is a strong result that suggests we can do better than GMI for sure,
-# especially after a patient has had at least one a1c measurement. Perhaps
-# patients now only need to get 1 a1c per year (instead of the recommended 4).
+# Huge improvements for all the studies, though we have to ignore
+# Protocol_F since n is so low, and we can't really trust CMetformin
+# for the same reason. This is a strong result that suggests we can do
+# better than GMI for sure, especially after a patient has had at
+# least one a1c measurement. Perhaps patients now only need to get 1
+# a1c per year (instead of the recommended 4).
 short_train_df %>% 
-  mutate(gmi_err = a1c_value - (3.31 + 0.02392 * mean_bg_full_day)) %>% 
+  mutate(gmi_err = short_gmi_err) %>% 
   group_by(dataset) %>% 
   summarize(n = n(),
             GMI_RMSE = sqrt(mean(gmi_err^2))) %>% 
-  inner_join(tibble(`MRS+_RMSE` = cv_rmses, n = fold_lengths), by = "n") %>% 
-  mutate(percent_change = (`MRS+_RMSE` - GMI_RMSE) / GMI_RMSE)
+  inner_join(tibble(`MRS+_RMSE` = cv_rmses, 
+                    n = fold_lengths), by = "n") %>% 
+  mutate(percent_change = (`MRS+_RMSE` - GMI_RMSE) / GMI_RMSE) %>% 
+  write_csv("lib/analysis/results/short_cdv.csv")
 
-#################### CROSS-DATASET VALIDATION: CLASSIFICATION ##################
+############################## PLOTS ################################
 
-# Ensure that the same dataset is not in both train and validation sets during CV.
-cross_fit_control <- trainControl(method = "repeatedcv",
-                                  index = groupKFold(train_df$dataset, 5),
-                                  verboseIter = FALSE,
-                                  allowParallel = TRUE,
-                                  classProbs = TRUE,
-                                  summaryFunction = twoClassSummary)
+rf_pred <- select(rf_fit$pred, pred, index = rowIndex)
 
-mrs_class_cross_fit <- 
-  train(unhealthy_a1c ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
-        train_df,
-        method = "glm",
-        family = binomial(),
-        metric = "ROC",
-        trControl = cross_fit_control)
-
-cv_auc <- mrs_class_cross_fit$resample$ROC
-cv_auc
-
-#################### ROC CURVE FOR LOGISTIC MRS MODEL ##########################
-
-set.seed(1)
-roc_train <- sample(1:nrow(train_df), round(0.8 * nrow(train_df)))
-roc_train_df <- train_df[roc_train,]
-roc_validation_df <- train_df[-roc_train,]
-
-roc_fit <- glm(factor(unhealthy_a1c) ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
-               roc_train_df, family = binomial())
-pred <- predict(roc_fit, newdata = roc_validation_df, type = "response")
-true <- as.numeric(factor(roc_validation_df$unhealthy_a1c)) - 1
-
-roc_curve <- performance(prediction(pred, true),"fpr","fnr")
-
-roc_df <- tibble(fnr = unlist(roc_curve@x.values), 
-                 fpr = unlist(roc_curve@y.values)) %>% 
-  mutate(fnr_fpr_ratio = fnr/fpr,
-         dist_from_10 = abs(fnr_fpr_ratio - 10)) %>% 
-  arrange(dist_from_10)
-
-head(roc_df)
-
-###################### DEPRECATED ##############################################
-
-# ### Back to classification
-# 
-# # Baseline models are GMI and using the same classification as the last a1c.
-# short_gmi_unhealthy <- factor(as.integer(short_gmi < 7.5))
-# short_carryover_unhealthy <- factor(as.integer(short_carryover_a1c < 7.5))
-# short_unhealthy_a1c <- short_train_df$unhealthy_a1c
-# 
-# short_gmi_acc <- mean(short_unhealthy_a1c == short_gmi_unhealthy)
-# carryover_acc <- mean(short_unhealthy_a1c == short_carryover_unhealthy)
-# 
-# # Best model from before.
-# class_former_fit <-
-#   train(unhealthy_a1c ~ 1 + mean_bg_full_day + black + sd_bg_full_day,
-#         short_train_df,
-#         method = "glm",
-#         family = binomial(),
-#         trControl = short_fit_control)
-# 
-# # Best model augmented with the previous a1c value.
-# last_a1c_class_former_fit <- 
-#   train(unhealthy_a1c ~ 1 + last_unhealthy_a1c + mean_bg_full_day + 
-#           black + sd_bg_full_day,
-#         short_train_df,
-#         method = "glm",
-#         family = binomial(),
-#         trControl = short_fit_control)
-# 
-# # Best model augmented with the previous a1c value and the residual from
-# # previous prediction.
-# resid_last_a1c_class_former_fit <- 
-#   train(unhealthy_a1c ~ 1 + last_unhealthy_a1c + mean_bg_full_day + black + 
-#           sd_bg_full_day + last_unhealthy_resid,
-#         short_train_df,
-#         method = "glm",
-#         family = binomial(),
-#         trControl = short_fit_control)
-# 
-# # Including the prior a1c is a solid improvement over GMI.
-# # Interesting, GMI is no worse than the best model that does not include the
-# # prior a1c.
-# list(short_gmi_acc = short_gmi_acc,
-#      carryover_acc = carryover_acc) %>% 
-#   append(
-#     map(list(former_cv_acc = class_former_fit, 
-#              last_a1c_former_cv_acc = last_a1c_class_former_fit,
-#              resid_last_a1c_former_cv_acc = resid_last_a1c_class_former_fit),
-#         extract_cv_accuracy))
-
-
-# fold_lengths <- map_int(mrs_class_cross_fit$control$indexOut, length)
-# 
-# unhealthy_a1c_raw <- as.numeric(train_df$unhealthy_a1c) - 1
-# 
-# train_df %>% 
-#   mutate(gmi = 3.31 + 0.02392 * mean_bg_full_day,
-#          GMI_AUC = abs(unhealthy_a1c_raw - (gmi < 7.5))) %>% 
-#   group_by(dataset) %>% 
-#   summarize(n = n(),
-#             GMI_ACC = 1 - mean(gmi_err01)) %>% 
-#   inner_join(tibble(`MRS_ACC` = cv_acc, n = fold_lengths), by = "n") %>% 
-#   mutate(percent_change = (`MRS_ACC` - GMI_ACC) / GMI_ACC)
+train_df %>% 
+  rowid_to_column("index") %>% 
+  inner_join(rf_pred, by = "index") %>% 
+  mutate(rf_err = a1c_value - pred)
